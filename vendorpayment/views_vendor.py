@@ -104,13 +104,24 @@ class VendorManagerViewSet(viewsets.ViewSet):
         serializer = AddVendorBankSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
-        user = request.user
-        mobile = serializer.validated_data['mobile']
+        user = request.user  # ✅ CURRENT LOGGED IN USER (RETAILER)
+        vendor_mobile = serializer.validated_data['mobile']  # ❌ VENDOR का mobile (BENEFICIARY)
         recipient_name = serializer.validated_data['recipient_name']
         account_number = serializer.validated_data['account_number']
         ifsc_code = serializer.validated_data['ifsc_code'].upper()
         
-        # ✅ 1. Check wallet balance for beneficiary fee
+        # ✅ 1. CURRENT USER (RETAILER) का mobile get करें
+        retailer_mobile = user.phone_number
+        
+        if not retailer_mobile:
+            return Response({
+                'success': False,
+                'error': 'आपका mobile number नहीं मिला। कृपया अपने profile में mobile number update करें।'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        logger.info(f"🔄 Bank verification: Retailer={retailer_mobile}, Vendor={vendor_mobile}")
+        
+        # ✅ 2. Check wallet balance for beneficiary fee
         wallet = user.wallet
         beneficiary_fee = Decimal('2.90')
         
@@ -120,10 +131,10 @@ class VendorManagerViewSet(viewsets.ViewSet):
                 'error': f'Insufficient balance. ₹{beneficiary_fee} required for beneficiary verification. Available: ₹{wallet.balance}'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # ✅ 2. Check if this bank already exists for this user+mobile
+        # ✅ 3. Check if this bank already exists for this user+vendor_mobile
         existing_bank = VendorBank.objects.filter(
             user=user,
-            vendor_mobile=mobile,
+            vendor_mobile=vendor_mobile,
             account_number=account_number
         ).first()
         
@@ -133,12 +144,13 @@ class VendorManagerViewSet(viewsets.ViewSet):
                 'error': 'This bank account is already added for this mobile number.'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # ✅ 3. Verify bank details using EKO API
-        logger.info(f"🔍 Verifying bank details for vendor: {mobile}")
+        # ✅ 4. Verify bank details using EKO API
+        # ✅ IMPORTANT: retailer_mobile (current user) भेजें, vendor_mobile नहीं
+        logger.info(f"🔍 Verifying bank details for retailer: {retailer_mobile}")
         verification_result = bank_verifier.verify_bank_details(
             ifsc_code=ifsc_code,
             account_number=account_number,
-            mobile=mobile,
+            retailer_mobile=retailer_mobile,  # ✅ CURRENT USER का mobile
             customer_name=recipient_name
         )
         
@@ -155,7 +167,7 @@ class VendorManagerViewSet(viewsets.ViewSet):
                 'api_response': verification_result.get('data', {})
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # ✅ 4. Bank verified successfully
+        # ✅ 5. Bank verified successfully
         bank_name = verification_result.get('bank_name', '')
         name_match = verification_result.get('name_match', False)
         
@@ -167,7 +179,7 @@ class VendorManagerViewSet(viewsets.ViewSet):
                 'provided_name': recipient_name
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # ✅ 5. Deduct beneficiary fee from wallet WITHOUT PIN
+        # ✅ 6. Deduct beneficiary fee from wallet WITHOUT PIN
         try:
             # Use new method that doesn't require PIN
             deducted_amount = wallet.deduct_fee_without_pin(beneficiary_fee)
@@ -184,7 +196,8 @@ class VendorManagerViewSet(viewsets.ViewSet):
                 created_by=user,
                 status='success',
                 metadata={
-                    'vendor_mobile': mobile,
+                    'retailer_mobile': retailer_mobile,  # ✅ Add retailer mobile
+                    'vendor_mobile': vendor_mobile,
                     'recipient_name': recipient_name,
                     'account_number': account_number[-4:],
                     'ifsc_code': ifsc_code,
@@ -201,10 +214,10 @@ class VendorManagerViewSet(viewsets.ViewSet):
                 'error': f'Failed to deduct beneficiary fee: {str(e)}'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # ✅ 6. Create VendorBank record with BOTH verified
+        # ✅ 7. Create VendorBank record with BOTH verified
         vendor_bank = VendorBank.objects.create(
             user=user,
-            vendor_mobile=mobile,
+            vendor_mobile=vendor_mobile,  # ❌ Vendor का mobile
             recipient_name=recipient_name,
             account_number=account_number,
             ifsc_code=ifsc_code,
@@ -215,7 +228,7 @@ class VendorManagerViewSet(viewsets.ViewSet):
             verification_ref_id=verification_result.get('data', {}).get('tid', '')
         )
         
-        logger.info(f"✅ Vendor bank added successfully (BOTH mobile and bank verified): {vendor_bank}")
+        logger.info(f"✅ Vendor bank added successfully: {vendor_bank}")
         
         return Response({
             'success': True,

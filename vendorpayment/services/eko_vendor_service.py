@@ -48,12 +48,12 @@ class EkoVendorService:
         return self.make_request("POST", endpoint, payload)
     
     
-    def verify_bank_details(self, ifsc_code, account_number, mobile, customer_name):
+    def verify_bank_details(self, ifsc_code, account_number, retailer_mobile, customer_name):
         endpoint = f"/v2/banks/ifsc:{ifsc_code}/accounts/{account_number}"
 
         data = {
             "initiator_id": self.INITIATOR_ID,
-            "customer_id": mobile,
+            "customer_id": retailer_mobile,
             "user_code": self.USER_CODE
         }
 
