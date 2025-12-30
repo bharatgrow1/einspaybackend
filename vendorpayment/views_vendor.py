@@ -175,9 +175,9 @@ class VendorManagerViewSet(viewsets.ViewSet):
             # Create transaction record for fee deduction
             Transaction.objects.create(
                 wallet=wallet,
-                amount=Decimal('0.00'),
-                service_charge=deducted_amount,
-                net_amount=Decimal('0.00'),
+                amount=deducted_amount,
+                service_charge=Decimal('0.00'),
+                net_amount=deducted_amount,
                 transaction_type='debit',
                 transaction_category='beneficiary_verification',
                 description=f"Beneficiary verification fee for {recipient_name} - {account_number[-4:]}",
