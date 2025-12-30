@@ -8,17 +8,22 @@ from django.conf import settings
 from django.utils import timezone
 import logging
 from decimal import Decimal
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 class EkobbpsService:
     def __init__(self):
         self.base_url = "https://api.eko.in:25002/ekoicici/v2"
-        self.developer_key = settings.EKO_DEV_KEY
-        self.access_key = settings.EKO_SECRET_KEY
-        self.user_code = settings.EKO_USER_CODE
-        self.initiator_id = settings.EKO_INITIATOR_ID
+        self.developer_key = os.getenv("EKO_DEVELOPER_KEY")
+        self.access_key = os.getenv("EKO_SECRET_KEY")
+        self.initiator_id = os.getenv("EKO_INITIATOR_ID")
+        self.user_code = os.getenv("EKO_USER_CODE")
+
         self.timeout = 30
+
     
     def _generate_timestamp(self):
         """Generate timestamp in milliseconds"""
