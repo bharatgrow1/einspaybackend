@@ -112,3 +112,27 @@ class AddVendorBankSerializer(serializers.Serializer):
 
 class SearchVendorByMobileSerializer(serializers.Serializer):
     mobile = serializers.CharField(max_length=15, required=True)
+
+
+
+
+class VerifyVendorBankSerializer(serializers.Serializer):
+    mobile = serializers.CharField(max_length=15, required=True)
+    account_number = serializers.CharField(required=True)
+    ifsc_code = serializers.CharField(required=True)
+
+    def validate_account_number(self, value):
+        if len(value) < 9 or len(value) > 18 or not value.isdigit():
+            raise serializers.ValidationError("Invalid account number")
+        return value
+
+    def validate_ifsc_code(self, value):
+        value = value.upper()
+        if len(value) != 11 or not value[:4].isalpha() or value[4] != '0':
+            raise serializers.ValidationError("Invalid IFSC code")
+        return value
+
+
+
+
+

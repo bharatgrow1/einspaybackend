@@ -12,4 +12,5 @@ urlpatterns = [
     path('vendor/add-bank/', VendorManagerViewSet.as_view({'post': 'add_vendor_bank'}), name='vendor-add-bank'),
     path('vendor/search/', VendorManagerViewSet.as_view({'post': 'search_vendor_by_mobile'}), name='vendor-search'),
     path('vendor/my-banks/', VendorManagerViewSet.as_view({'get': 'my_vendor_banks'}), name='my-vendor-banks'),
+    path('vendor/verify-bank/',VendorManagerViewSet.as_view({'post': 'verify_bank'}),name='vendor-verify-bank'),
 ]
