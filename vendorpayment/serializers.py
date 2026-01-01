@@ -52,6 +52,7 @@ class VendorPaymentResponseSerializer(serializers.ModelSerializer):
 
 class VendorMobileVerificationSerializer(serializers.Serializer):
     mobile = serializers.CharField(max_length=15, required=True)
+    vendor_name = serializers.CharField(max_length=255)
     
     def validate_mobile(self, value):
         value = value.strip()
@@ -131,7 +132,6 @@ class VerifyVendorBankSerializer(serializers.Serializer):
         if len(value) != 11 or not value[:4].isalpha() or value[4] != '0':
             raise serializers.ValidationError("Invalid IFSC code")
         return value
-
 
 
 

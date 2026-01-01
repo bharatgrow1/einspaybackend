@@ -146,8 +146,8 @@ class VendorBank(models.Model):
         self.save()
 
 class VendorOTP(models.Model):
-    """Vendor mobile verification के लिए OTP store करने के लिए"""
     vendor_mobile = models.CharField(max_length=15)
+    vendor_name = models.CharField(max_length=255)
     otp = models.CharField(max_length=6)
     is_verified = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
