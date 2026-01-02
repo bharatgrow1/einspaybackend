@@ -88,6 +88,7 @@ class AddVendorBankSerializer(serializers.Serializer):
     recipient_name = serializers.CharField(required=True)
     account_number = serializers.CharField(required=True)
     ifsc_code = serializers.CharField(required=True)
+    is_verified = serializers.BooleanField(required=False, default=False)
     
     def validate_mobile(self, value):
         """Basic mobile validation"""
