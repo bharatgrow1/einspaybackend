@@ -1,6 +1,6 @@
 from rest_framework.routers import DefaultRouter
 from rest_framework import routers
-from api.views import SignUPRequestViewSet
+from api.views import SignUPRequestViewSet, HelpDeskViewSet
 from services.views import (ServiceCategoryViewSet, DirectServiceFormViewSet, ServiceSubCategoryViewSet,
     ServiceFormViewSet, ServiceSubmissionViewSet, ServiceImageViewSet)
 from users.views import (PermissionViewSet, AuthViewSet, UserViewSet, WalletViewSet,
@@ -20,6 +20,7 @@ router = DefaultRouter()
 
 # Users
 router.register(r'upload-images', ServiceImageViewSet)
+router.register("helpdesk", HelpDeskViewSet, basename="helpdesk")
 
 router.register(r'auth', AuthViewSet, basename='auth')
 router.register(r'users', UserViewSet, basename='users')
