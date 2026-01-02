@@ -291,16 +291,34 @@ class VendorManagerViewSet(viewsets.ViewSet):
         account_number = serializer.validated_data['account_number']
         ifsc_code = serializer.validated_data['ifsc_code'].upper()
 
+
+        existing_bank = VendorBank.objects.filter(
+            user=user,
+            vendor_mobile=vendor_mobile,
+            account_number=account_number,
+            is_bank_verified=True
+        ).first()
+
+        if existing_bank:
+            return Response({
+                "success": True,
+                "already_verified": True,
+                "message": "Account already added & verified. No charges applied.",
+                "recipient_name": existing_bank.recipient_name,
+                "bank_name": existing_bank.bank_name,
+                "fee_deducted": 0,
+                "remaining_balance": float(wallet.balance)
+            })
+
+
         beneficiary_fee = Decimal("3.0")
 
-        # 1️⃣ Balance check
         if wallet.balance < beneficiary_fee:
             return Response({
                 "success": False,
                 "error": "Insufficient balance"
             }, status=400)
 
-        # 2️⃣ Bank verify (EKO)
         verification_result = bank_verifier.verify_bank_details(
             ifsc_code=ifsc_code,
             account_number=account_number,
@@ -314,7 +332,6 @@ class VendorManagerViewSet(viewsets.ViewSet):
                 "error": "Bank verification failed"
             }, status=400)
 
-        # 3️⃣ 💸 DEDUCT BALANCE (ONLY HERE)
         deducted = wallet.deduct_fee_without_pin(beneficiary_fee)
 
         Transaction.objects.create(
