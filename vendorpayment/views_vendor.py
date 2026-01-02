@@ -181,7 +181,7 @@ class VendorManagerViewSet(viewsets.ViewSet):
         user = request.user
         
         vendor_banks = VendorBank.objects.filter(
-            user=user,
+            # user=user,
             vendor_mobile=mobile
         ).order_by('-created_at')
 
@@ -223,7 +223,7 @@ class VendorManagerViewSet(viewsets.ViewSet):
         user = request.user
         
         vendor_banks = VendorBank.objects.filter(
-            user=user,
+            # user=user,
             vendor_mobile=mobile,
             is_mobile_verified=True,
             is_bank_verified=True
@@ -301,7 +301,7 @@ class VendorManagerViewSet(viewsets.ViewSet):
         ifsc_code = serializer.validated_data['ifsc_code'].upper()
 
         existing_bank = VendorBank.objects.filter(
-            user=user,
+            # user=user,
             vendor_mobile=vendor_mobile,
             account_number=account_number,
             is_bank_verified=True
@@ -320,7 +320,7 @@ class VendorManagerViewSet(viewsets.ViewSet):
 
         # 🔍 pending bank
         pending_bank = VendorBank.objects.filter(
-            user=user,
+            # user=user,
             vendor_mobile=vendor_mobile,
             account_number=account_number,
             is_bank_verified=False
