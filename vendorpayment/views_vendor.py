@@ -146,7 +146,8 @@ class VendorManagerViewSet(viewsets.ViewSet):
                 'error': 'This bank account is already added for this mobile number.'
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # ✅ Create vendor bank (assumed verified via verify_bank API)
+        is_verified = serializer.validated_data.get("is_verified", False)
+        
         vendor_bank = VendorBank.objects.create(
             user=user,
             vendor_mobile=vendor_mobile,
@@ -155,8 +156,7 @@ class VendorManagerViewSet(viewsets.ViewSet):
             ifsc_code=ifsc_code,
             bank_name=request.data.get('bank_name', ''),
             is_mobile_verified=True,
-            is_bank_verified=True,
-            verification_ref_id=request.data.get('verification_ref_id', 'VERIFIED_VIA_VERIFY_API')
+            is_bank_verified=is_verified,
         )
 
         logger.info(
@@ -184,11 +184,19 @@ class VendorManagerViewSet(viewsets.ViewSet):
             user=user,
             vendor_mobile=mobile
         ).order_by('-created_at')
+
+
+        otp_record = VendorOTP.objects.filter(
+            vendor_mobile=mobile,
+            is_verified=True
+        ).first()
+        vendor_name = otp_record.vendor_name if otp_record else ""
         
         if not vendor_banks.exists():
             return Response({
                 'success': True,
                 'message': 'No banks found for this mobile number',
+                'vendor_name': vendor_name,
                 'banks': [],
                 'mobile': mobile
             })
@@ -198,6 +206,7 @@ class VendorManagerViewSet(viewsets.ViewSet):
         return Response({
             'success': True,
             'message': f'Found {vendor_banks.count()} bank(s) for this mobile',
+            'vendor_name': vendor_name,
             'mobile': mobile,
             'banks': serializer.data
         })
@@ -291,7 +300,6 @@ class VendorManagerViewSet(viewsets.ViewSet):
         account_number = serializer.validated_data['account_number']
         ifsc_code = serializer.validated_data['ifsc_code'].upper()
 
-
         existing_bank = VendorBank.objects.filter(
             user=user,
             vendor_mobile=vendor_mobile,
@@ -310,6 +318,13 @@ class VendorManagerViewSet(viewsets.ViewSet):
                 "remaining_balance": float(wallet.balance)
             })
 
+        # 🔍 pending bank
+        pending_bank = VendorBank.objects.filter(
+            user=user,
+            vendor_mobile=vendor_mobile,
+            account_number=account_number,
+            is_bank_verified=False
+        ).first()
 
         beneficiary_fee = Decimal("3.0")
 
@@ -346,8 +361,14 @@ class VendorManagerViewSet(viewsets.ViewSet):
             status="success",
         )
 
+        # ✅ IMPORTANT FIX
+        if pending_bank:
+            pending_bank.is_bank_verified = True
+            pending_bank.save(update_fields=["is_bank_verified"])
+
         return Response({
             "success": True,
+            "verified": True,
             "recipient_name": verification_result.get("account_holder_name"),
             "bank_name": verification_result.get("bank_name"),
             "fee_deducted": float(beneficiary_fee),
