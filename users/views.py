@@ -236,6 +236,14 @@ class UserBankViewSet(viewsets.ModelViewSet):
         serializer.save(user=self.request.user)
 
 
+    @action(detail=False, methods=['get'])
+    def admin_banks(self, request):
+        admin_users = User.objects.filter(role__in=['admin', 'superadmin'], is_active=True)
+        banks = UserBank.objects.filter(user__in=admin_users)
+        serializer = UserBankSerializer(banks, many=True)
+        return Response(serializer.data)
+
+
 
 class AuthViewSet(viewsets.ViewSet):
     """Handles login with password + OTP verification"""
