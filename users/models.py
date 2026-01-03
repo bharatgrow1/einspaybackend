@@ -222,6 +222,23 @@ class User(AbstractUser):
         return self.created_by
     
 
+class UserBank(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,related_name='banks')
+    bank_name = models.CharField(max_length=255)
+    account_number = models.CharField(max_length=50)
+    ifsc_code = models.CharField(max_length=11)
+    account_holder_name = models.CharField(max_length=255)
+    is_primary = models.BooleanField(default=False)
+    is_verified = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ['user', 'account_number']
+
+    def __str__(self):
+        return f"{self.user.username} - {self.bank_name}"
+
+
 class ForgotPasswordOTP(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     otp = models.CharField(max_length=6)
