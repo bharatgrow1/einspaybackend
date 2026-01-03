@@ -6,7 +6,7 @@ from django.core.validators import MinValueValidator
 import re
 
 from users.models import (Wallet, Transaction,  ServiceCharge, FundRequest, UserService, User, 
-                          RolePermission, State, City, FundRequest)
+                          RolePermission, State, City, FundRequest, UserBank)
 
 
 class LoginSerializer(serializers.Serializer):
@@ -428,6 +428,15 @@ class UserSerializer(serializers.ModelSerializer):
         user.save()
         Wallet.objects.create(user=user)
         return user
+    
+
+
+class UserBankSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserBank
+        fields = '__all__'
+        read_only_fields = ['user', 'is_verified']
+
 
 class PermissionSerializer(serializers.ModelSerializer):
     content_type_name = serializers.CharField(source='content_type.model', read_only=True)

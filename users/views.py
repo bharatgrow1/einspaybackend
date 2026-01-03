@@ -23,7 +23,7 @@ from decimal import Decimal
 
 from users.models import (Wallet, Transaction,  ServiceCharge, FundRequest, UserService, User, 
                           RolePermission, State, City, FundRequest, EmailOTP, ForgotPasswordOTP, 
-                           MobileOTP, ForgetPinOTP, WalletPinOTP )
+                           MobileOTP, ForgetPinOTP, WalletPinOTP, UserBank )
 
 from services.models import ServiceSubCategory
 from users.permissions import (IsSuperAdmin, IsAdminUser)
@@ -35,7 +35,7 @@ from users.serializers import (LoginSerializer, OTPVerifySerializer, WalletSeria
         RolePermissionSerializer, ForgotPasswordSerializer, VerifyForgotPasswordOTPSerializer, ResetPasswordSerializer,
         StateSerializer, CitySerializer, FundRequestCreateSerializer, FundRequestUpdateSerializer, FundRequestApproveSerializer,
         FundRequestRejectSerializer, RequestWalletPinOTPSerializer, VerifyWalletPinOTPSerializer, SetWalletPinWithOTPSerializer,
-        ForgetPinRequestOTPSerializer, VerifyForgetPinOTPSerializer, ResetPinWithForgetOTPSerializer, UserProfileUpdateSerializer,
+        UserBankSerializer, VerifyForgetPinOTPSerializer, ResetPinWithForgetOTPSerializer, UserProfileUpdateSerializer,
         UserKYCSerializer, MobileOTPLoginSerializer, MobileOTPVerifySerializer, UserPermissionSerializer, ResetWalletPinWithOTPSerializer)
 
 from commission.models import CommissionTransaction
@@ -222,6 +222,28 @@ class PermissionViewSet(viewsets.ViewSet):
             'role': role,
             'permissions': serializer.data
         })
+    
+
+
+class UserBankViewSet(viewsets.ModelViewSet):
+    serializer_class = UserBankSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return UserBank.objects.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+
+    @action(detail=False, methods=['get'])
+    def admin_banks(self, request):
+        admin_users = User.objects.filter(role__in=['admin', 'superadmin'], is_active=True)
+        banks = UserBank.objects.filter(user__in=admin_users)
+        serializer = UserBankSerializer(banks, many=True)
+        return Response(serializer.data)
+
+
 
 class AuthViewSet(viewsets.ViewSet):
     """Handles login with password + OTP verification"""

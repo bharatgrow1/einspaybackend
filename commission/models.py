@@ -9,14 +9,12 @@ from django.core.exceptions import ValidationError
 
 
 class CommissionPlan(models.Model):
-    PLAN_TYPES = (
-        ('platinum', 'Platinum'),
-        ('gold', 'Gold'),
-        ('silver', 'Silver'),
-    )
-    
     name = models.CharField(max_length=100)
-    plan_type = models.CharField(max_length=20, choices=PLAN_TYPES, unique=True)
+    plan_type = models.CharField(
+        max_length=50,
+        unique=True,
+        help_text="Unique key like platinum, gold, diamond, premium"
+    )
     description = models.TextField(blank=True, null=True)
     is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
@@ -25,6 +23,15 @@ class CommissionPlan(models.Model):
     
     def __str__(self):
         return f"{self.name} ({self.plan_type})"
+    
+    def save(self, *args, **kwargs):
+        self.plan_type = self.plan_type.lower().strip()
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def clean(self):
+        if " " in self.plan_type:
+            raise ValidationError("plan_type must not contain spaces")
 
 class ServiceCommission(models.Model):
     COMMISSION_TYPES = (
