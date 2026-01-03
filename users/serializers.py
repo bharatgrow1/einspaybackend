@@ -560,6 +560,54 @@ class FundRequestCreateSerializer(serializers.ModelSerializer):
             data['user'] = request.user
         return data
 
+
+class FundRequestRejectSerializer(serializers.Serializer):
+    admin_notes = serializers.CharField(required=True)
+
+
+class FundRequestDetailSerializer(serializers.ModelSerializer):
+    user_username = serializers.CharField(source='user.username', read_only=True)
+    user_role = serializers.CharField(source='user.role', read_only=True)
+    onboarder_username = serializers.SerializerMethodField()
+    processed_by_username = serializers.CharField(
+        source='processed_by.username',
+        read_only=True
+    )
+
+    class Meta:
+        model = FundRequest
+        fields = [
+            'id',
+            'user',
+            'user_username',
+            'user_role',
+
+            'amount',
+            'transaction_type',
+            'deposit_bank',
+            'Your_Bank',
+            'account_number',
+
+            'reference_number',
+            'remarks',
+            'screenshot',
+
+            'status',
+
+            'admin_notes',
+            'processed_by_username',
+            'processed_at',
+
+            'created_at',
+            'updated_at',
+            'onboarder_username',
+        ]
+
+    def get_onboarder_username(self, obj):
+        onboarder = obj.get_onboarder()
+        return onboarder.username if onboarder else None
+
+
 class FundRequestUpdateSerializer(serializers.ModelSerializer):
     user_username = serializers.CharField(source='user.username', read_only=True)
     processed_by_username = serializers.CharField(source='processed_by.username', read_only=True)

@@ -31,10 +31,10 @@ from users.serializers import (LoginSerializer, OTPVerifySerializer, WalletSeria
         ResetWalletPinSerializer, VerifyWalletPinSerializer, TransactionCreateSerializer, TransactionSerializer,
         TransactionFilterSerializer, ServiceChargeSerializer, WalletBalanceResponseSerializer, FundRequestHistorySerializer,
         ServiceSubCategorySerializer, UserServiceSerializer, UserCreateSerializer, UserSerializer, PermissionSerializer,
-        UserPermissionsSerializer, ContentTypeSerializer, GrantRolePermissionSerializer, ModelPermissionSerializer,
+        UserPermissionsSerializer, FundRequestDetailSerializer, GrantRolePermissionSerializer, ModelPermissionSerializer,
         RolePermissionSerializer, ForgotPasswordSerializer, VerifyForgotPasswordOTPSerializer, ResetPasswordSerializer,
         StateSerializer, CitySerializer, FundRequestCreateSerializer, FundRequestUpdateSerializer, FundRequestApproveSerializer,
-        FundRequestStatsSerializer, RequestWalletPinOTPSerializer, VerifyWalletPinOTPSerializer, SetWalletPinWithOTPSerializer,
+        FundRequestRejectSerializer, RequestWalletPinOTPSerializer, VerifyWalletPinOTPSerializer, SetWalletPinWithOTPSerializer,
         ForgetPinRequestOTPSerializer, VerifyForgetPinOTPSerializer, ResetPinWithForgetOTPSerializer, UserProfileUpdateSerializer,
         UserKYCSerializer, MobileOTPLoginSerializer, MobileOTPVerifySerializer, UserPermissionSerializer, ResetWalletPinWithOTPSerializer)
 
@@ -1951,9 +1951,20 @@ class FundRequestViewSet(viewsets.ModelViewSet):
     def get_serializer_class(self):
         if self.action == 'create':
             return FundRequestCreateSerializer
-        elif self.action in ['update', 'partial_update']:
+
+        if self.action in [
+            'list',
+            'retrieve',
+            'my_requests',
+            'pending_requests',
+            'approve',
+            'reject'
+        ]:
+            return FundRequestDetailSerializer
+        if self.action in ['update', 'partial_update']:
             return FundRequestUpdateSerializer
-        return FundRequestCreateSerializer
+        return FundRequestDetailSerializer
+
     
     def get_queryset(self):
         user = self.request.user
@@ -2002,6 +2013,36 @@ class FundRequestViewSet(viewsets.ModelViewSet):
             })
         else:
             return Response({'error': message}, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
+    def reject(self, request, pk=None):
+        fund_request = self.get_object()
+
+        serializer = FundRequestRejectSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        notes = serializer.validated_data['admin_notes']
+
+        success, message = fund_request.reject(
+            rejected_by=request.user,
+            notes=notes
+        )
+
+        if success:
+            fund_request.refresh_from_db()
+            return Response({
+                "message": message,
+                "data": FundRequestDetailSerializer(
+                    fund_request,
+                    context={'request': request}
+                ).data
+            })
+
+        return Response({"error": message}, status=400)
+
     
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
     def my_requests(self, request):
