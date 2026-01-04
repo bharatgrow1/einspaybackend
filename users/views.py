@@ -563,7 +563,6 @@ class AuthViewSet(viewsets.ViewSet):
         })
     
 
-
     @action(detail=False, methods=['post'], permission_classes=[AllowAny])
     def google_login(self, request):
         serializer = GoogleLoginSerializer(data=request.data)
@@ -580,40 +579,32 @@ class AuthViewSet(viewsets.ViewSet):
 
             email = idinfo.get('email')
             name = idinfo.get('name', '')
-            picture = idinfo.get('picture', '')
-            sub = idinfo.get('sub')
 
-            if not email:
-                return Response({'error': 'Email not provided by Google'}, status=400)
-
-            user, created = User.objects.get_or_create(
+            user, _ = User.objects.get_or_create(
                 email=email,
                 defaults={
                     'username': email.split('@')[0],
                     'first_name': name.split(' ')[0],
                     'last_name': ' '.join(name.split(' ')[1:]),
-                    'profile_picture': picture,
                     'role': 'retailer'
                 }
             )
 
-            Wallet.objects.get_or_create(user=user)
+            # 🔐 SEND OTP
+            otp_obj, _ = EmailOTP.objects.get_or_create(user=user)
+            otp = otp_obj.generate_otp()
 
-            refresh = RefreshToken.for_user(user)
+            send_otp_email(user.email, otp)
 
             return Response({
-                'access': str(refresh.access_token),
-                'refresh': str(refresh),
-                'username': user.username,
-                'email': user.email,
-                'role': user.role,
-                'is_new_user': created,
-                'is_pin_set': user.wallet.is_pin_set,
-                'login_type': 'google'
+                "otp_required": True,
+                "username": user.username,
+                "message": "OTP sent to your registered email"
             }, status=200)
 
         except ValueError:
-            return Response({'error': 'Invalid Google token'}, status=400)
+            return Response({"error": "Invalid Google token"}, status=400)
+
 
 
 
