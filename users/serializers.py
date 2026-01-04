@@ -583,6 +583,13 @@ class FundRequestDetailSerializer(serializers.ModelSerializer):
         read_only=True
     )
 
+    service_charge = serializers.DecimalField(
+        max_digits=15, decimal_places=2, read_only=True
+    )
+    wallet_credit = serializers.DecimalField(
+        max_digits=15, decimal_places=2, read_only=True
+    )
+
     class Meta:
         model = FundRequest
         fields = [
@@ -592,6 +599,8 @@ class FundRequestDetailSerializer(serializers.ModelSerializer):
             'user_role',
 
             'amount',
+            'service_charge',
+            'wallet_credit',
             'transaction_type',
             'deposit_bank',
             'Your_Bank',
