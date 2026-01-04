@@ -22,6 +22,9 @@ from .email_utils import send_otp_email
 from decimal import Decimal
 from django.core.cache import cache
 
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+
 
 from users.models import (Wallet, Transaction,  ServiceCharge, FundRequest, UserService, User, 
                           RolePermission, State, City, FundRequest, EmailOTP, ForgotPasswordOTP, 
@@ -37,7 +40,7 @@ from users.serializers import (LoginSerializer, OTPVerifySerializer, WalletSeria
         RolePermissionSerializer, ForgotPasswordSerializer, VerifyForgotPasswordOTPSerializer, ResetPasswordSerializer,
         StateSerializer, CitySerializer, FundRequestCreateSerializer, FundRequestUpdateSerializer, FundRequestApproveSerializer,
         FundRequestRejectSerializer, RequestWalletPinOTPSerializer, VerifyWalletPinOTPSerializer, SetWalletPinWithOTPSerializer,
-        UserBankSerializer, VerifyForgetPinOTPSerializer, ResetPinWithForgetOTPSerializer, UserProfileUpdateSerializer,
+        UserBankSerializer, GoogleLoginSerializer, ResetPinWithForgetOTPSerializer, UserProfileUpdateSerializer,
         UserKYCSerializer, MobileOTPLoginSerializer, MobileOTPVerifySerializer, UserPermissionSerializer, ResetWalletPinWithOTPSerializer)
 
 from commission.models import CommissionTransaction
@@ -558,6 +561,59 @@ class AuthViewSet(viewsets.ViewSet):
             'mobile': mobile,
             'provider': 'smsdealnow'
         })
+    
+
+
+    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
+    def google_login(self, request):
+        serializer = GoogleLoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        token = serializer.validated_data['id_token']
+
+        try:
+            idinfo = id_token.verify_oauth2_token(
+                token,
+                google_requests.Request(),
+                settings.GOOGLE_CLIENT_ID
+            )
+
+            email = idinfo.get('email')
+            name = idinfo.get('name', '')
+            picture = idinfo.get('picture', '')
+            sub = idinfo.get('sub')
+
+            if not email:
+                return Response({'error': 'Email not provided by Google'}, status=400)
+
+            user, created = User.objects.get_or_create(
+                email=email,
+                defaults={
+                    'username': email.split('@')[0],
+                    'first_name': name.split(' ')[0],
+                    'last_name': ' '.join(name.split(' ')[1:]),
+                    'profile_picture': picture,
+                    'role': 'retailer'
+                }
+            )
+
+            Wallet.objects.get_or_create(user=user)
+
+            refresh = RefreshToken.for_user(user)
+
+            return Response({
+                'access': str(refresh.access_token),
+                'refresh': str(refresh),
+                'username': user.username,
+                'email': user.email,
+                'role': user.role,
+                'is_new_user': created,
+                'is_pin_set': user.wallet.is_pin_set,
+                'login_type': 'google'
+            }, status=200)
+
+        except ValueError:
+            return Response({'error': 'Invalid Google token'}, status=400)
 
 
 
@@ -2192,3 +2248,4 @@ class UserHierarchyViewSet(viewsets.ViewSet):
             'total_users': User.objects.count(),
             'users_by_role': User.objects.values('role').annotate(count=Count('id'))
         })
+    

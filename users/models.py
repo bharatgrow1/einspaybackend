@@ -87,19 +87,13 @@ class User(AbstractUser):
         ('franchise', 'Franchise'),
         ('other', 'Other'),
     )
-
+    email = models.EmailField(unique=True,null=True,blank=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='retailer')
-    created_by = models.ForeignKey(
-        'self',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='created_users'
-    )
+    created_by = models.ForeignKey('self',on_delete=models.SET_NULL,null=True,blank=True,related_name='created_users')
     profile_picture = models.CharField(max_length=500, null=True, blank=True)
     first_name = models.CharField(max_length=30, blank=True, null=True)
     last_name = models.CharField(max_length=30, blank=True, null=True)
-    phone_number = models.CharField(max_length=15, blank=True, null=True)
+    phone_number = models.CharField(max_length=15,unique=True, blank=True, null=True)
     alternative_phone = models.CharField(max_length=15, blank=True, null=True)
     aadhar_number = models.CharField(max_length=12, blank=True, null=True)
     pan_number = models.CharField(max_length=10, blank=True, null=True)
