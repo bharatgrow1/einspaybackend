@@ -7,6 +7,7 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.models import Permission
 from django.db import transaction as db_transaction
 from django.db.models import Q, Sum, Count, F
+from vendorpayment.models import VendorOTP
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
 from django.shortcuts import get_object_or_404
@@ -16,9 +17,13 @@ from django.conf import settings
 from django.utils import timezone
 from datetime import datetime, timedelta
 from services.models import ServiceSubmission
-from .utils.twilio_service import twilio_service
+from vendorpayment.services.smsdealnow_otp import SMSDealNowOTPProvider
 from .email_utils import send_otp_email
 from decimal import Decimal
+from django.core.cache import cache
+
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
 
 from users.models import (Wallet, Transaction,  ServiceCharge, FundRequest, UserService, User, 
@@ -35,7 +40,7 @@ from users.serializers import (LoginSerializer, OTPVerifySerializer, WalletSeria
         RolePermissionSerializer, ForgotPasswordSerializer, VerifyForgotPasswordOTPSerializer, ResetPasswordSerializer,
         StateSerializer, CitySerializer, FundRequestCreateSerializer, FundRequestUpdateSerializer, FundRequestApproveSerializer,
         FundRequestRejectSerializer, RequestWalletPinOTPSerializer, VerifyWalletPinOTPSerializer, SetWalletPinWithOTPSerializer,
-        UserBankSerializer, VerifyForgetPinOTPSerializer, ResetPinWithForgetOTPSerializer, UserProfileUpdateSerializer,
+        UserBankSerializer, GoogleLoginSerializer, ResetPinWithForgetOTPSerializer, UserProfileUpdateSerializer,
         UserKYCSerializer, MobileOTPLoginSerializer, MobileOTPVerifySerializer, UserPermissionSerializer, ResetWalletPinWithOTPSerializer)
 
 from commission.models import CommissionTransaction
@@ -43,7 +48,7 @@ from commission.models import CommissionTransaction
 import logging
 
 logger = logging.getLogger(__name__)
-
+sms_otp_provider = SMSDealNowOTPProvider()
 
 if not logger.handlers:
     logging.basicConfig(
@@ -119,7 +124,6 @@ class PermissionViewSet(viewsets.ViewSet):
             user = User.objects.get(id=user_id)
             permissions = Permission.objects.filter(id__in=permission_ids)
             
-            # Clear existing permissions and assign new ones
             user.user_permissions.clear()
             user.user_permissions.add(*permissions)
             
@@ -409,201 +413,198 @@ class AuthViewSet(viewsets.ViewSet):
     
     @action(detail=False, methods=['post'], permission_classes=[AllowAny])
     def send_mobile_otp(self, request):
-        """Send OTP to mobile number with proper Twilio integration"""
+        serializer = MobileOTPLoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        mobile = serializer.validated_data['mobile']
+        
+        cleaned_mobile = str(mobile).strip()
+        
+        if cleaned_mobile.startswith('+'):
+            cleaned_mobile = cleaned_mobile[1:]
+        
+        if cleaned_mobile.startswith('91') and len(cleaned_mobile) == 12:
+            cleaned_mobile = cleaned_mobile[2:]
+        
+        cleaned_mobile = ''.join(filter(str.isdigit, cleaned_mobile))
+        if len(cleaned_mobile) > 10:
+            cleaned_mobile = cleaned_mobile[-10:]
+        
+        cache_key = f"otp_rate_limit_{cleaned_mobile}"
+        if cache.get(cache_key):
+            return Response(
+                {'error': 'Please wait 30 seconds before requesting new OTP'},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+        
+        try:
+            user = User.objects.get(phone_number=cleaned_mobile)
+        except User.DoesNotExist:
+            try:
+                user = User.objects.get(phone_number=f"+91{cleaned_mobile}")
+            except User.DoesNotExist:
+                users = User.objects.filter(
+                    Q(phone_number=cleaned_mobile) |
+                    Q(phone_number=f"+91{cleaned_mobile}") |
+                    Q(phone_number=f"91{cleaned_mobile}") |
+                    Q(phone_number__endswith=cleaned_mobile[-8:])
+                )
+                
+                if users.exists():
+                    user = users.first()
+                else:
+                    return Response(
+                        {'error': 'No account found with this mobile number'}, 
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+
+        sms_mobile = f"+91{cleaned_mobile}"
+        
+        result = sms_otp_provider.send_otp(sms_mobile)
+        
+        if not result.get("success"):
+            return Response(
+                {'error': result.get('error', 'Failed to send OTP')},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        try:
+            from users.models import MobileOTP
+            saved_otp = MobileOTP.objects.filter(mobile=cleaned_mobile).first()
+            if saved_otp:
+                print(f" OTP saved in database: {saved_otp.otp}")
+            else:
+                print(f" No OTP found in MobileOTP for {cleaned_mobile}")
+        except Exception as e:
+            print(f" Error checking OTP: {e}")
+
+        cache.set(cache_key, True, 30)
+
+        return Response({
+            'success': True,
+            'message': 'OTP sent successfully',
+            'mobile': cleaned_mobile
+        })
+    
+
+    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
+    def verify_mobile_otp(self, request):
+        mobile = request.data.get("mobile")
+        otp = request.data.get("otp")
+
+        mobile = mobile[-10:]
+
+        try:
+            record = VendorOTP.objects.get(
+                vendor_mobile=mobile,
+                otp=otp,
+                is_verified=False
+            )
+        except VendorOTP.DoesNotExist:
+            return Response(
+                {"error": "Invalid OTP. Please check and try again."},
+                status=400
+            )
+
+        if record.is_expired():
+            return Response({"error": "OTP expired"}, status=400)
+
+        record.mark_verified()
+
+        user = User.objects.get(phone_number__endswith=mobile)
+        wallet, _ = Wallet.objects.get_or_create(user=user)
+        refresh = RefreshToken.for_user(user)
+
+        return Response({
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+            "username": user.username,
+            "role": user.role,
+            "is_pin_set": wallet.is_pin_set,
+            "message": "Login successful"
+        })
+
+    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
+    def resend_mobile_otp(self, request):
+        """Resend OTP to mobile number using SMSDealNow"""
         serializer = MobileOTPLoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
         mobile = serializer.validated_data['mobile']
         
-        # Check if user exists
         try:
             user = User.objects.get(phone_number=mobile)
-            logger.info(f"✅ User found: {user.username} for mobile: {mobile}")
         except User.DoesNotExist:
-            logger.error(f"❌ User not found for mobile: {mobile}")
             return Response(
                 {'error': 'No account found with this mobile number'}, 
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # DEBUG: Log Twilio service status
-        logger.info(f"🔧 Twilio Service Status - Client: {twilio_service.client}")
-        logger.info(f"🔧 Twilio Service SID: {twilio_service.verify_service_sid}")
+        result = sms_otp_provider.send_otp(mobile)
         
-        # Try Twilio first
-        if twilio_service and twilio_service.client:
-            logger.info(f"🔧 Trying Twilio for: {mobile}")
-            result = twilio_service.send_otp_sms(mobile)
-            
-            logger.info(f"🔧 Twilio Result: {result}")
-            
-            if result['success']:
-                logger.info(f"✅ Twilio OTP sent successfully")
-                # Also create database entry as backup
-                otp_obj, created = MobileOTP.objects.get_or_create(
-                    mobile=mobile,
-                    defaults={'expires_at': timezone.now() + timedelta(minutes=10)}
-                )
-                if created:
-                    otp_obj.generate_otp()
-                
-                return Response({
-                    'message': 'OTP sent successfully to your mobile',
-                    'mobile': mobile,
-                    'method': 'twilio',
-                    'status': result['status']
-                })
-            else:
-                logger.warning(f"⚠️ Twilio failed: {result.get('error')}")
-                return Response({
-                    'error': f"Failed to send OTP via Twilio: {result.get('error')}",
-                    'mobile': mobile
-                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        if not result.get("success"):
+            return Response(
+                {'error': 'Failed to resend OTP. Please try again.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
-        # Fallback to database OTP
-        logger.info(f"🔧 Using database OTP fallback for: {mobile}")
         try:
             otp_obj, created = MobileOTP.objects.get_or_create(
                 mobile=mobile,
                 defaults={'expires_at': timezone.now() + timedelta(minutes=10)}
             )
-            otp, token = otp_obj.generate_otp()
-            
-            # In development, you might want to log the OTP
-            if settings.DEBUG:
-                logger.info(f"📱 Database OTP for {mobile}: {otp}")
-            
-            return Response({
-                'message': 'OTP generated successfully',
-                'mobile': mobile,
-                'method': 'database_fallback',
-                'note': 'Twilio service unavailable, using database OTP'
-            })
+            otp_obj.generate_otp()
         except Exception as e:
-            logger.error(f"❌ Database OTP creation failed: {e}")
-            return Response(
-                {'error': 'Failed to generate OTP. Please try again.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
-    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
-    def verify_mobile_otp(self, request):
-        """Verify mobile OTP with both Twilio and database fallback"""
-        serializer = MobileOTPVerifySerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        
-        mobile = serializer.validated_data['mobile']
-        otp = serializer.validated_data['otp']
-        
-        verification_method = None
-        is_verified = False
-
-        # First try Twilio verification
-        if twilio_service and twilio_service.client:
-            formatted_mobile = mobile
-            if not mobile.startswith('+'):
-                formatted_mobile = '+91' + mobile
-                
-            result = twilio_service.verify_otp(formatted_mobile, otp)
-            if result['success'] and result['valid']:
-                verification_method = 'twilio'
-                is_verified = True
-                logger.info(f"✅ Twilio OTP verification successful for: {mobile}")
-
-        # If Twilio fails or not available, try database verification
-        if not is_verified:
-            logger.info(f"🔧 Trying database OTP verification for: {mobile}")
-            try:
-                otp_obj = MobileOTP.objects.get(
-                    mobile=mobile,
-                    otp=otp,
-                    is_verified=False
-                )
-                
-                if otp_obj.is_expired():
-                    return Response(
-                        {'error': 'OTP has expired. Please request a new one.'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                
-                # Mark OTP as verified
-                otp_obj.mark_verified()
-                verification_method = 'database'
-                is_verified = True
-                logger.info(f"✅ Database OTP verification successful for: {mobile}")
-                
-            except MobileOTP.DoesNotExist:
-                logger.error(f"❌ Invalid OTP for mobile: {mobile}")
-                return Response(
-                    {'error': 'Invalid OTP. Please check and try again.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-        if not is_verified:
-            return Response(
-                {'error': 'OTP verification failed'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Get user and generate tokens
-        try:
-            user = User.objects.get(phone_number=mobile)
-            
-            # Get or create wallet
-            wallet, created = Wallet.objects.get_or_create(user=user)
-            
-            # Generate JWT tokens
-            refresh = RefreshToken.for_user(user)
-            
-            return Response({
-                'access': str(refresh.access_token),
-                'refresh': str(refresh),
-                'role': user.role,
-                'user_id': user.id,
-                'username': user.username,
-                'needs_pin_setup': not wallet.is_pin_set,
-                'is_pin_set': wallet.is_pin_set,
-                'permissions': list(user.get_all_permissions()),
-                'message': 'Login successful',
-                'verification_method': verification_method
-            })
-
-        except User.DoesNotExist:
-            logger.error(f"❌ User not found after OTP verification for mobile: {mobile}")
-            return Response(
-                {'error': 'User not found'}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
-    def resend_mobile_otp(self, request):
-        """Resend OTP to mobile number"""
-        serializer = MobileOTPLoginSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        
-        mobile = serializer.validated_data['mobile']
-        
-        try:
-            user = User.objects.get(phone_number=mobile)
-        except User.DoesNotExist:
-            return Response(
-                {'error': 'No account found with this mobile number'}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        result = twilio_service.send_otp_sms(mobile)
-        
-        if not result['success']:
-            return Response(
-                {'error': 'Failed to send OTP. Please try again.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            logger.error(f"❌ Database update failed on resend: {e}")
 
         return Response({
             'message': 'OTP resent successfully',
             'mobile': mobile,
-            'status': result['status']
+            'provider': 'smsdealnow'
         })
+    
+
+    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
+    def google_login(self, request):
+        serializer = GoogleLoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        token = serializer.validated_data['id_token']
+
+        try:
+            idinfo = id_token.verify_oauth2_token(
+                token,
+                google_requests.Request(),
+                settings.GOOGLE_CLIENT_ID
+            )
+
+            email = idinfo.get('email')
+            name = idinfo.get('name', '')
+
+            user, _ = User.objects.get_or_create(
+                email=email,
+                defaults={
+                    'username': email.split('@')[0],
+                    'first_name': name.split(' ')[0],
+                    'last_name': ' '.join(name.split(' ')[1:]),
+                    'role': 'retailer'
+                }
+            )
+
+            # 🔐 SEND OTP
+            otp_obj, _ = EmailOTP.objects.get_or_create(user=user)
+            otp = otp_obj.generate_otp()
+
+            send_otp_email(user.email, otp)
+
+            return Response({
+                "otp_required": True,
+                "username": user.username,
+                "message": "OTP sent to your registered email"
+            }, status=200)
+
+        except ValueError:
+            return Response({"error": "Invalid Google token"}, status=400)
+
 
 
 
@@ -1126,7 +1127,7 @@ class WalletViewSet(DynamicModelViewSet):
             'user_id': user.id
         })
 
-    @action(detail=False, methods=['post'], permission_classes=[AllowAny])  # ✅ Important: AllowAny
+    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
     def reset_pin_with_forget_otp(self, request):
         """Step 3: Reset PIN after OTP verification - NO AUTH REQUIRED"""
         email = request.data.get('email')
@@ -2238,3 +2239,4 @@ class UserHierarchyViewSet(viewsets.ViewSet):
             'total_users': User.objects.count(),
             'users_by_role': User.objects.values('role').annotate(count=Count('id'))
         })
+    

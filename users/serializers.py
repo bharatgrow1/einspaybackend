@@ -319,6 +319,23 @@ class UserCreateSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['created_by']
 
+    def validate_username(self, value):
+        if User.objects.filter(username=value).exists():
+            raise serializers.ValidationError("Username already exists")
+        return value
+
+
+    def validate_email(self, value):
+        if value and User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("Email already registered")
+        return value
+
+    def validate_phone_number(self, value):
+        if value and User.objects.filter(phone_number=value).exists():
+            raise serializers.ValidationError("Mobile number already registered")
+        return value
+    
+
     def validate_role(self, value):
         request = self.context.get('request')
         if not request:
@@ -348,7 +365,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
         
         user = User(
             username=validated_data['username'],
-            email=validated_data.get('email', ''),
+            email=validated_data.get('email') or None,
             role=validated_data['role'],
             created_by=self.context['request'].user,
             # Personal Information
@@ -583,6 +600,13 @@ class FundRequestDetailSerializer(serializers.ModelSerializer):
         read_only=True
     )
 
+    service_charge = serializers.DecimalField(
+        max_digits=15, decimal_places=2, read_only=True
+    )
+    wallet_credit = serializers.DecimalField(
+        max_digits=15, decimal_places=2, read_only=True
+    )
+
     class Meta:
         model = FundRequest
         fields = [
@@ -592,6 +616,8 @@ class FundRequestDetailSerializer(serializers.ModelSerializer):
             'user_role',
 
             'amount',
+            'service_charge',
+            'wallet_credit',
             'transaction_type',
             'deposit_bank',
             'Your_Bank',
@@ -834,3 +860,8 @@ class MobileOTPLoginSerializer(serializers.Serializer):
 class MobileOTPVerifySerializer(serializers.Serializer):
     mobile = serializers.CharField(max_length=15, required=True)
     otp = serializers.CharField(max_length=6, required=True)
+
+
+
+class GoogleLoginSerializer(serializers.Serializer):
+    id_token = serializers.CharField()
