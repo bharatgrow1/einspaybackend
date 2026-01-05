@@ -399,7 +399,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
         user.save()
         
         # Create wallet
-        Wallet.objects.create(user=user)
+        Wallet.objects.get_or_create(user=user)
         
         try:
             for service_id in service_ids:
@@ -443,7 +443,7 @@ class UserSerializer(serializers.ModelSerializer):
         user = User(**validated_data)
         user.set_password(password)
         user.save()
-        Wallet.objects.create(user=user)
+        Wallet.objects.get_or_create(user=user)
         return user
     
 
