@@ -1991,16 +1991,37 @@ class FundRequestViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         user = self.request.user
-        
-        if user.role in ['superadmin', 'admin']:
-            return FundRequest.objects.all().select_related('user', 'processed_by')
-        
-        elif user.role in ['master', 'dealer']:
-            onboarded_users = User.objects.filter(created_by=user)
-            return FundRequest.objects.filter(user__in=onboarded_users).select_related('user', 'processed_by')
-        
-        else:
-            return FundRequest.objects.filter(user=user).select_related('user', 'processed_by')
+
+        # Superadmin → sabki history
+        if user.role == "superadmin":
+            return FundRequest.objects.all().select_related(
+                "user", "processed_by"
+            ).order_by("-created_at")
+
+        # Admin → sab except superadmin
+        if user.role == "admin":
+            return FundRequest.objects.exclude(
+                user__role="superadmin"
+            ).select_related(
+                "user", "processed_by"
+            ).order_by("-created_at")
+
+        # Master / Dealer → apni + downline ki
+        if user.role in ["master", "dealer"]:
+            downline_users = User.objects.filter(created_by=user)
+            return FundRequest.objects.filter(
+                Q(user=user) | Q(user__in=downline_users)
+            ).select_related(
+                "user", "processed_by"
+            ).order_by("-created_at")
+
+        # Retailer → sirf apni
+        return FundRequest.objects.filter(
+            user=user
+        ).select_related(
+            "user", "processed_by"
+        ).order_by("-created_at")
+
     
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
