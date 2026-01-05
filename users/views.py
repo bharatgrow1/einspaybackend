@@ -1441,6 +1441,60 @@ class WalletViewSet(DynamicModelViewSet):
             'is_pin_set': wallet.is_pin_set,
             'username': request.user.username 
         })
+    
+
+    @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
+    def superadmin_add_balance(self, request):
+        if request.user.role != "superadmin":
+            return Response(
+                {"error": "Only superadmin can add balance"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        amount = request.data.get("amount")
+
+        if not amount:
+            return Response(
+                {"error": "Amount is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            amount = Decimal(str(amount))
+            if amount <= 0:
+                raise ValueError
+        except Exception:
+            return Response(
+                {"error": "Invalid amount"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        wallet, _ = Wallet.objects.get_or_create(user=request.user)
+
+        opening_balance = wallet.balance
+        wallet.balance += amount
+        wallet.save()
+
+        Transaction.objects.create(
+            wallet=wallet,
+            amount=amount,
+            net_amount=amount,
+            service_charge=Decimal("0.00"),
+            transaction_type="credit",
+            transaction_category="manual_topup",
+            description="Manual top-up by SuperAdmin",
+            created_by=request.user,
+            opening_balance=opening_balance,
+            closing_balance=wallet.balance
+        )
+
+        return Response({
+            "success": True,
+            "message": "Balance added successfully",
+            "balance": str(wallet.balance)
+        })
+
+
 
     @action(detail=False, methods=['get'],  permission_classes=[IsAuthenticated])
     def transaction_history(self, request):

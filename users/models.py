@@ -792,13 +792,12 @@ class FundRequest(models.Model):
                 self.wallet_credit = net_amount
                 self.save()
                 
+
                 wallet, created = Wallet.objects.get_or_create(user=self.user)
 
                 opening_balance = wallet.balance
-                
                 wallet.balance += net_amount
                 wallet.save()
-
                 closing_balance = wallet.balance
                 
                 Transaction.objects.create(
@@ -816,12 +815,67 @@ class FundRequest(models.Model):
                     opening_balance=opening_balance,
                     closing_balance=closing_balance  
                 )
-                
+
+
+                # if approved_by.role != "superadmin":
+                #     admin_wallet = approved_by.wallet
+
+                #     if admin_wallet.balance < net_amount:
+                #         raise ValueError("Admin wallet has insufficient balance")
+
+                #     admin_opening_balance = admin_wallet.balance
+                #     admin_wallet.balance -= net_amount
+                #     admin_wallet.save()
+                #     admin_closing_balance = admin_wallet.balance
+
+                #     Transaction.objects.create(
+                #         wallet=admin_wallet,
+                #         amount=net_amount,
+                #         net_amount=net_amount,
+                #         service_charge=Decimal("0.00"),
+                #         transaction_type='debit',
+                #         transaction_category='fund_request',
+                #         description=(
+                #             f"Fund request approved for {self.user.username}: "
+                #             f"{self.reference_number}"
+                #         ),
+                #         created_by=approved_by,
+                #         opening_balance=admin_opening_balance,
+                #         closing_balance=admin_closing_balance
+                #     )
+
+                admin_wallet = approved_by.wallet
+
+                if admin_wallet.balance < net_amount:
+                    raise ValueError("Admin wallet has insufficient balance")
+
+                admin_opening_balance = admin_wallet.balance
+                admin_wallet.balance -= net_amount
+                admin_wallet.save()
+                admin_closing_balance = admin_wallet.balance
+
+                Transaction.objects.create(
+                    wallet=admin_wallet,
+                    amount=net_amount,
+                    net_amount=net_amount,
+                    service_charge=Decimal("0.00"),
+                    transaction_type='debit',
+                    transaction_category='fund_request',
+                    description=(
+                        f"Fund request approved for {self.user.username}: "
+                        f"{self.reference_number}"
+                    ),
+                    created_by=approved_by,
+                    opening_balance=admin_opening_balance,
+                    closing_balance=admin_closing_balance
+                )
+
                 return True, "Fund request approved successfully"
                     
         except Exception as e:
             print(f"Error approving fund request: {str(e)}")
             return False, f"Error approving request: {str(e)}"
+
 
     
     def reject(self, rejected_by, notes=""):
