@@ -3,6 +3,7 @@ from django.contrib.auth.models import Permission
 from django.contrib.contenttypes.models import ContentType
 from services.models import ServiceSubCategory
 from django.core.validators import MinValueValidator
+from users.email_utils import send_welcome_email
 import re
 
 from users.models import (Wallet, Transaction,  ServiceCharge, FundRequest, UserService, User, 
@@ -362,13 +363,13 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         service_ids = validated_data.pop('service_ids', [])
-        
+        raw_password = validated_data['password']
+
         user = User(
             username=validated_data['username'],
-            email=validated_data.get('email') or None,
+            email=validated_data.get('email'),
             role=validated_data['role'],
             created_by=self.context['request'].user,
-            # Personal Information
             first_name=validated_data.get('first_name'),
             last_name=validated_data.get('last_name'),
             phone_number=validated_data.get('phone_number'),
@@ -377,42 +378,41 @@ class UserCreateSerializer(serializers.ModelSerializer):
             pan_number=validated_data.get('pan_number'),
             date_of_birth=validated_data.get('date_of_birth'),
             gender=validated_data.get('gender'),
-            # Business Information
             business_name=validated_data.get('business_name'),
             business_nature=validated_data.get('business_nature'),
             business_registration_number=validated_data.get('business_registration_number'),
             gst_number=validated_data.get('gst_number'),
             business_ownership_type=validated_data.get('business_ownership_type'),
-            # Address Information
             address=validated_data.get('address'),
             city=validated_data.get('city'),
             state=validated_data.get('state'),
             pincode=validated_data.get('pincode'),
             landmark=validated_data.get('landmark'),
-            # Bank Information
             bank_name=validated_data.get('bank_name'),
             account_number=validated_data.get('account_number'),
             ifsc_code=validated_data.get('ifsc_code'),
             account_holder_name=validated_data.get('account_holder_name'),
         )
-        user.set_password(validated_data['password'])
+
+        user.set_password(raw_password)
         user.save()
-        
-        # Create wallet
+
         Wallet.objects.get_or_create(user=user)
-        
-        try:
-            for service_id in service_ids:
-                try:
-                    service = ServiceSubCategory.objects.get(id=service_id, is_active=True)
-                    UserService.objects.create(user=user, service=service)
-                except ServiceSubCategory.DoesNotExist:
-                    continue
-        except Exception as e:
-            print(f"Service assignment failed: {e}")
-        
+
+        for service_id in service_ids:
+            try:
+                service = ServiceSubCategory.objects.get(id=service_id, is_active=True)
+                UserService.objects.create(user=user, service=service)
+            except ServiceSubCategory.DoesNotExist:
+                pass
+
+        if user.email:
+            try:
+                send_welcome_email(user, raw_password)
+            except Exception as e:
+                print("Welcome email failed:", e)
+
         return user
-    
 
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=False)

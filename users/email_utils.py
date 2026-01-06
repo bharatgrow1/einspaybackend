@@ -1,5 +1,6 @@
 from django.core.mail import send_mail
 from users.models import ServiceCharge, Transaction
+from django.conf import settings
 
 def send_otp_email(email, otp, is_password_reset=False, purpose=None):
     if is_password_reset:
@@ -18,7 +19,7 @@ def send_otp_email(email, otp, is_password_reset=False, purpose=None):
     send_mail(
         subject=subject,
         message=message,
-        from_email='priteshbharatgrow@gmail.com',
+        from_email='provigo171@gmail.com',
         recipient_list=[email],
         fail_silently=False,
     )
@@ -58,3 +59,36 @@ def create_transaction_record(wallet, amount, transaction_type, category, descri
     transaction.save()
     
     return transaction
+
+
+
+
+def send_welcome_email(user, raw_password):
+    subject = "Welcome to EinsPay Portal"
+
+    message = f"""
+Dear {user.first_name or user.username},
+
+Welcome to EinsPay
+Your account has been successfully created.
+
+Login Details:
+Username: {user.username}
+Password: {raw_password}
+
+Login Portal:
+https://eins.einspay.com/
+
+Please change your password after first login.
+
+Regards,
+EinsPay Team
+"""
+
+    send_mail(
+        subject,
+        message,
+        settings.DEFAULT_FROM_EMAIL,
+        [user.email],
+        fail_silently=False,
+    )

@@ -281,9 +281,15 @@ class State(models.Model):
 class City(models.Model):
     state = models.ForeignKey(State, on_delete=models.CASCADE, related_name='cities')
     name = models.CharField(max_length=100)
+    district_code = models.CharField(
+        max_length=20,
+        null=True,
+        blank=True
+    )
 
     def __str__(self):
         return f"{self.name}, {self.state.name}"
+
 
 class RolePermission(models.Model):
     """Permissions assigned to specific roles"""
