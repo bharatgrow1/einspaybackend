@@ -19,6 +19,7 @@ from .serializers import (
 )
 from .services.mobile_verification import vendor_mobile_verifier
 from .services.eko_vendor_service import bank_verifier
+from dmt.models import EkoBank
 
 logger = logging.getLogger(__name__)
 
@@ -298,7 +299,26 @@ class VendorManagerViewSet(viewsets.ViewSet):
 
         vendor_mobile = serializer.validated_data['mobile']
         account_number = serializer.validated_data['account_number']
-        ifsc_code = serializer.validated_data['ifsc_code'].upper()
+
+        from dmt.models import EkoBank
+        data = serializer.validated_data
+
+        if data.get("ifsc_code"):
+            ifsc_code = data["ifsc_code"].upper()
+        else:
+            bank_code = data["bank_code"].upper()
+            bank = EkoBank.objects.filter(
+                bank_code=bank_code,
+                static_ifsc__isnull=False
+            ).first()
+
+            if not bank:
+                return Response({
+                    "success": False,
+                    "error": "Invalid bank code or IFSC not available"
+                }, status=400)
+
+            ifsc_code = bank.static_ifsc
 
         existing_bank = VendorBank.objects.filter(
             # user=user,
