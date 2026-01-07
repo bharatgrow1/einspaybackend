@@ -19,7 +19,6 @@ from .serializers import (
 )
 from .services.mobile_verification import vendor_mobile_verifier
 from .services.eko_vendor_service import bank_verifier
-from dmt.models import EkoBank
 
 logger = logging.getLogger(__name__)
 
