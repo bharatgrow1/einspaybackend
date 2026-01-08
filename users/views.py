@@ -21,7 +21,7 @@ from vendorpayment.services.smsdealnow_otp import SMSDealNowOTPProvider
 from .email_utils import send_otp_email
 from decimal import Decimal
 from django.core.cache import cache
-
+from rest_framework.exceptions import PermissionDenied
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
@@ -234,10 +234,48 @@ class UserBankViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return UserBank.objects.filter(user=self.request.user)
+        user = self.request.user
+
+        if user.role == "superadmin":
+            return UserBank.objects.all()
+
+        if user.role in ["admin", "master", "dealer"]:
+            downline_users = User.objects.filter(created_by=user)
+            return UserBank.objects.filter(
+                Q(user=user) | Q(user__in=downline_users)
+            )
+
+        return UserBank.objects.filter(user=user)
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        """
+        RULES:
+        - Retailer → sirf apna bank
+        - Admin/Master/Dealer → apna + downline
+        """
+        request_user = self.request.user
+        target_user = serializer.validated_data.get("user")
+
+        if not target_user:
+            serializer.save(user=request_user)
+            return
+
+        if request_user.role == "retailer" and target_user != request_user:
+            raise PermissionDenied(
+                "You are not allowed to add bank for another user"
+            )
+
+        if request_user.role in ["admin", "master", "dealer"]:
+            is_downline = (
+                target_user.created_by == request_user
+            )
+
+            if target_user != request_user and not is_downline:
+                raise PermissionDenied(
+                    "You can add bank only for your downline users"
+                )
+
+        serializer.save()
 
 
     @action(detail=False, methods=['get'])
