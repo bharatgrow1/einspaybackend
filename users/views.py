@@ -40,7 +40,7 @@ from users.serializers import (LoginSerializer, OTPVerifySerializer, WalletSeria
         RolePermissionSerializer, ForgotPasswordSerializer, VerifyForgotPasswordOTPSerializer, ResetPasswordSerializer,
         StateSerializer, CitySerializer, FundRequestCreateSerializer, FundRequestUpdateSerializer, FundRequestApproveSerializer,
         FundRequestRejectSerializer, RequestWalletPinOTPSerializer, VerifyWalletPinOTPSerializer, SetWalletPinWithOTPSerializer,
-        UserBankSerializer, GoogleLoginSerializer, ResetPinWithForgetOTPSerializer, UserProfileUpdateSerializer,
+        UserBankSerializer, GoogleLoginSerializer, DirectWalletTransferSerializer, UserProfileUpdateSerializer,
         UserKYCSerializer, MobileOTPLoginSerializer, MobileOTPVerifySerializer, UserPermissionSerializer, ResetWalletPinWithOTPSerializer)
 
 from commission.models import CommissionTransaction
@@ -1526,6 +1526,205 @@ class WalletViewSet(DynamicModelViewSet):
             'total_debit': total_debit,
             'current_balance': user.wallet.balance
         })
+    
+
+
+    @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
+    def direct_transfer(self, request):
+        """Direct wallet-to-wallet transfer (admin to user)"""
+        serializer = DirectWalletTransferSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        user_id = serializer.validated_data['user_id']
+        amount = serializer.validated_data['amount']
+        transaction_type = serializer.validated_data['transaction_type']
+        pin = serializer.validated_data['pin']
+        notes = serializer.validated_data.get('notes', '')
+        
+        try:
+            admin = request.user
+            admin_wallet = admin.wallet
+            target_user = User.objects.get(id=user_id)
+            target_wallet = target_user.wallet
+            
+            # Permission check - Admin can only transfer to their downline
+            if not admin.can_transfer_to_user(target_user):
+                return Response(
+                    {'error': 'You do not have permission to transfer money to this user'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Verify admin's PIN
+            if not admin_wallet.verify_pin(pin):
+                return Response(
+                    {'error': 'Invalid PIN'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            with db_transaction.atomic():
+                # For CREDIT: Add money to target user (from admin)
+                if transaction_type == 'credit':
+                    # Check admin has sufficient balance
+                    if not admin_wallet.has_sufficient_balance(amount):
+                        return Response(
+                            {'error': 'Insufficient balance in your wallet'},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                    
+                    # Deduct from admin
+                    admin_opening = admin_wallet.balance
+                    admin_wallet.deduct_amount(amount, pin=pin)
+                    admin_closing = admin_wallet.balance
+                    
+                    # Add to target user
+                    target_opening = target_wallet.balance
+                    target_wallet.add_amount(amount)
+                    target_closing = target_wallet.balance
+                    
+                    # Create admin transaction (debit)
+                    Transaction.objects.create(
+                        wallet=admin_wallet,
+                        amount=amount,
+                        net_amount=amount,
+                        service_charge=Decimal('0.00'),
+                        transaction_type='debit',
+                        transaction_category='direct_transfer',
+                        description=f"Direct transfer to {target_user.username}: {notes}",
+                        created_by=request.user,
+                        recipient_user=target_user,
+                        opening_balance=admin_opening,
+                        closing_balance=admin_closing,
+                        metadata={'notes': notes, 'transfer_type': 'credit_to_user', 'admin_id': admin.id}
+                    )
+                    
+                    # Create user transaction (credit)
+                    Transaction.objects.create(
+                        wallet=target_wallet,
+                        amount=amount,
+                        net_amount=amount,
+                        service_charge=Decimal('0.00'),
+                        transaction_type='credit',
+                        transaction_category='direct_transfer',
+                        description=f"Direct transfer from {request.user.username}: {notes}",
+                        created_by=request.user,
+                        recipient_user=request.user,
+                        opening_balance=target_opening,
+                        closing_balance=target_closing,
+                        metadata={'notes': notes, 'transfer_type': 'credit_from_admin', 'admin_id': admin.id}
+                    )
+                    
+                    message = f"₹{amount} transferred to {target_user.username}"
+                    
+                # For DEBIT: Deduct money from target user (to admin)
+                else:
+                    # Check target user has sufficient balance
+                    if not target_wallet.has_sufficient_balance(amount):
+                        return Response(
+                            {'error': 'User has insufficient balance'},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                    
+                    # Deduct from target user
+                    target_opening = target_wallet.balance
+                    # Target user's PIN not required as admin is performing this
+                    target_wallet.balance -= amount
+                    target_wallet.save()
+                    target_closing = target_wallet.balance
+                    
+                    # Add to admin
+                    admin_opening = admin_wallet.balance
+                    admin_wallet.balance += amount
+                    admin_wallet.save()
+                    admin_closing = admin_wallet.balance
+                    
+                    # Create user transaction (debit)
+                    Transaction.objects.create(
+                        wallet=target_wallet,
+                        amount=amount,
+                        net_amount=amount,
+                        service_charge=Decimal('0.00'),
+                        transaction_type='debit',
+                        transaction_category='direct_transfer',
+                        description=f"Direct deduction by {request.user.username}: {notes}",
+                        created_by=request.user,
+                        recipient_user=request.user,
+                        opening_balance=target_opening,
+                        closing_balance=target_closing,
+                        metadata={'notes': notes, 'transfer_type': 'debit_by_admin', 'admin_id': admin.id}
+                    )
+                    
+                    # Create admin transaction (credit)
+                    Transaction.objects.create(
+                        wallet=admin_wallet,
+                        amount=amount,
+                        net_amount=amount,
+                        service_charge=Decimal('0.00'),
+                        transaction_type='credit',
+                        transaction_category='direct_transfer',
+                        description=f"Direct deduction from {target_user.username}: {notes}",
+                        created_by=request.user,
+                        recipient_user=target_user,
+                        opening_balance=admin_opening,
+                        closing_balance=admin_closing,
+                        metadata={'notes': notes, 'transfer_type': 'credit_from_user', 'admin_id': admin.id}
+                    )
+                    
+                    message = f"₹{amount} deducted from {target_user.username}"
+                
+                return Response({
+                    'success': True,
+                    'message': message,
+                    'user_balance': target_wallet.balance,
+                    'admin_balance': admin_wallet.balance,
+                    'user_id': user_id,
+                    'amount': amount,
+                    'user_name': target_user.username,
+                    'admin_name': admin.username
+                })
+                
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'User not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"Direct transfer failed: {str(e)}")
+            return Response(
+                {'error': f'Transfer failed: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+
+
+    @action(detail=False, methods=['get'])
+    def direct_transfers(self, request):
+        """Get direct transfer transactions"""
+        queryset = Transaction.objects.filter(
+            transaction_category='direct_transfer'
+        ).select_related(
+            'wallet__user', 'created_by', 'recipient_user'
+        ).order_by('-created_at')
+        
+        # Filter by user if not admin
+        if not request.user.is_admin_user():
+            queryset = queryset.filter(
+                Q(wallet__user=request.user) | Q(created_by=request.user)
+            )
+        
+        # Apply filters
+        user_id = request.query_params.get('user_id')
+        if user_id and request.user.is_admin_user():
+            queryset = queryset.filter(wallet__user_id=user_id)
+        
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
     
 
 class TransactionViewSet(DynamicModelViewSet):

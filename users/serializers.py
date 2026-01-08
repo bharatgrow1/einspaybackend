@@ -865,3 +865,23 @@ class MobileOTPVerifySerializer(serializers.Serializer):
 
 class GoogleLoginSerializer(serializers.Serializer):
     id_token = serializers.CharField()
+
+
+
+
+class DirectWalletTransferSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    amount = serializers.DecimalField(max_digits=15, decimal_places=2, min_value=0.01)
+    transaction_type = serializers.ChoiceField(choices=['credit', 'debit'])
+    pin = serializers.CharField(max_length=4, write_only=True)
+    notes = serializers.CharField(required=False, allow_blank=True, max_length=500)
+    
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Amount must be greater than zero")
+        return value
+    
+    def validate_pin(self, value):
+        if not value.isdigit() or len(value) != 4:
+            raise serializers.ValidationError("PIN must be 4 digits")
+        return value
