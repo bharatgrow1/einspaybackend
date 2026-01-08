@@ -451,8 +451,8 @@ class UserSerializer(serializers.ModelSerializer):
 class UserBankSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserBank
-        fields = '__all__'
-        read_only_fields = ['user', 'is_verified']
+        fields = "__all__"
+        read_only_fields = ["is_verified"]
 
 
 class PermissionSerializer(serializers.ModelSerializer):
