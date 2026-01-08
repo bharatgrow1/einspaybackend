@@ -41,7 +41,7 @@ from users.serializers import (LoginSerializer, OTPVerifySerializer, WalletSeria
         StateSerializer, CitySerializer, FundRequestCreateSerializer, FundRequestUpdateSerializer, FundRequestApproveSerializer,
         FundRequestRejectSerializer, RequestWalletPinOTPSerializer, VerifyWalletPinOTPSerializer, SetWalletPinWithOTPSerializer,
         UserBankSerializer, GoogleLoginSerializer, DirectWalletTransferSerializer, UserProfileUpdateSerializer,
-        UserKYCSerializer, MobileOTPLoginSerializer, MobileOTPVerifySerializer, UserPermissionSerializer, ResetWalletPinWithOTPSerializer)
+        UserKYCSerializer, MobileOTPLoginSerializer, DirectTransferHistorySerializer, UserPermissionSerializer, ResetWalletPinWithOTPSerializer)
 
 from commission.models import CommissionTransaction
 
@@ -1698,32 +1698,30 @@ class WalletViewSet(DynamicModelViewSet):
         
 
 
-    @action(detail=False, methods=['get'])
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
     def direct_transfers(self, request):
-        """Get direct transfer transactions"""
         queryset = Transaction.objects.filter(
             transaction_category='direct_transfer'
         ).select_related(
             'wallet__user', 'created_by', 'recipient_user'
         ).order_by('-created_at')
-        
-        # Filter by user if not admin
+
         if not request.user.is_admin_user():
             queryset = queryset.filter(
-                Q(wallet__user=request.user) | Q(created_by=request.user)
+                Q(wallet__user=request.user) |
+                Q(created_by=request.user)
             )
-        
-        # Apply filters
+
         user_id = request.query_params.get('user_id')
         if user_id and request.user.is_admin_user():
             queryset = queryset.filter(wallet__user_id=user_id)
-        
+
         page = self.paginate_queryset(queryset)
+        serializer = DirectTransferHistorySerializer(page or queryset, many=True)
+
         if page is not None:
-            serializer = self.get_serializer(page, many=True)
             return self.get_paginated_response(serializer.data)
-        
-        serializer = self.get_serializer(queryset, many=True)
+
         return Response(serializer.data)
     
 
