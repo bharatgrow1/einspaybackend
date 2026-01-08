@@ -2550,3 +2550,42 @@ class UserHierarchyViewSet(viewsets.ViewSet):
             'users_by_role': User.objects.values('role').annotate(count=Count('id'))
         })
     
+
+
+    @action(detail=False, methods=['get'])
+    def assignable_users(self, request):
+        user = request.user
+
+        def get_downline_recursive(parent):
+            users = []
+            children = User.objects.filter(created_by=parent)
+
+            for child in children:
+                users.append({
+                    "id": child.id,
+                    "username": child.username,
+                    "role": child.role,
+                })
+                users.extend(get_downline_recursive(child))
+
+            return users
+
+        if user.role == "superadmin":
+            qs = User.objects.exclude(id=user.id)
+            data = [
+                {
+                    "id": u.id,
+                    "username": u.username,
+                    "role": u.role
+                }
+                for u in qs
+            ]
+            return Response({"users": data})
+
+        users = get_downline_recursive(user)
+
+        return Response({
+            "users": users,
+            "count": len(users)
+        })
+    
