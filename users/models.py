@@ -217,6 +217,24 @@ class User(AbstractUser):
         return self.created_by
     
 
+
+    def can_transfer_to_user(self, target_user):
+        """Check if user can directly transfer money to target user"""
+        if self.role == 'superadmin':
+            return True
+        
+        if self.role == 'admin':
+            return target_user.role in ['admin', 'master', 'dealer', 'retailer']
+        
+        if self.role == 'master':
+            return target_user.created_by == self and target_user.role in ['dealer', 'retailer']
+        
+        if self.role == 'dealer':
+            return target_user.created_by == self and target_user.role == 'retailer'
+        
+        return False
+    
+
 class UserBank(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,related_name='banks')
     bank_name = models.CharField(max_length=255)
