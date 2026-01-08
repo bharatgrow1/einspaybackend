@@ -885,3 +885,52 @@ class DirectWalletTransferSerializer(serializers.Serializer):
         if not value.isdigit() or len(value) != 4:
             raise serializers.ValidationError("PIN must be 4 digits")
         return value
+    
+
+
+class DirectTransferHistorySerializer(serializers.ModelSerializer):
+    from_user = serializers.SerializerMethodField()
+    to_user = serializers.SerializerMethodField()
+    wallet_user = serializers.SerializerMethodField()
+    notes = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Transaction
+        fields = [
+            'id',
+            'created_at',
+            'transaction_type',
+            'transaction_category',
+            'amount',
+            'opening_balance',
+            'closing_balance',
+            'from_user',
+            'to_user',
+            'wallet_user',
+            'notes',
+            'description',
+        ]
+
+    def get_from_user(self, obj):
+        return {
+            "id": obj.created_by.id if obj.created_by else None,
+            "username": obj.created_by.username if obj.created_by else None,
+            "role": obj.created_by.role if obj.created_by else None,
+        }
+
+    def get_to_user(self, obj):
+        return {
+            "id": obj.recipient_user.id if obj.recipient_user else None,
+            "username": obj.recipient_user.username if obj.recipient_user else None,
+            "role": obj.recipient_user.role if obj.recipient_user else None,
+        }
+
+    def get_wallet_user(self, obj):
+        return {
+            "id": obj.wallet.user.id,
+            "username": obj.wallet.user.username,
+            "role": obj.wallet.user.role,
+        }
+
+    def get_notes(self, obj):
+        return obj.metadata.get("notes") if obj.metadata else None
