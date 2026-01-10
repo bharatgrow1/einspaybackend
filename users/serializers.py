@@ -7,7 +7,7 @@ from users.email_utils import send_welcome_email
 import re
 
 from users.models import (Wallet, Transaction,  ServiceCharge, FundRequest, UserService, User, 
-                          RolePermission, State, City, FundRequest, UserBank)
+                          RolePermission, State, City, FundRequest, UserBank, RefundRequest)
 
 
 class LoginSerializer(serializers.Serializer):
@@ -934,3 +934,25 @@ class DirectTransferHistorySerializer(serializers.ModelSerializer):
 
     def get_notes(self, obj):
         return obj.metadata.get("notes") if obj.metadata else None
+
+
+
+class RefundRequestCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RefundRequest
+        fields = ['transaction_id', 'amount', 'refund_type', 'reason', 'screenshot']
+        read_only_fields = ['user', 'status']
+
+class RefundRequestSerializer(serializers.ModelSerializer):
+    user_username = serializers.CharField(source='user.username', read_only=True)
+    transaction_details = TransactionSerializer(source='transaction', read_only=True)
+    processed_by_username = serializers.CharField(source='processed_by.username', read_only=True)
+    
+    class Meta:
+        model = RefundRequest
+        fields = '__all__'
+        read_only_fields = ['refund_id', 'status', 'processed_by', 'processed_at']
+
+class RefundActionSerializer(serializers.Serializer):
+    action = serializers.ChoiceField(choices=['approve', 'reject', 'process'])
+    admin_notes = serializers.CharField(required=False)
