@@ -590,7 +590,17 @@ class Transaction(models.Model):
         ('pending', 'Pending'),
         ('cancelled', 'Cancelled'),
     )
-    
+
+
+    REFUND_STATUS_CHOICES = (
+        ('none', 'No Refund'),
+        ('requested', 'Refund Requested'),
+        ('approved', 'Refund Approved'),
+        ('processed', 'Refund Processed'),
+    )
+
+    refund_status = models.CharField(max_length=20, choices=REFUND_STATUS_CHOICES, default='none')
+    refund_reference = models.CharField(max_length=100, blank=True, null=True)
     wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name='transactions')
     amount = models.DecimalField(max_digits=15, decimal_places=2)
     net_amount = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
@@ -613,9 +623,9 @@ class Transaction(models.Model):
     closing_balance = models.DecimalField(
         max_digits=50, decimal_places=2, null=True, blank=True
     )
-    # Service-related fields (for service payments)
+
     service_submission = models.ForeignKey(
-        'services.ServiceSubmission',  # Your service app model
+        'services.ServiceSubmission',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -626,7 +636,6 @@ class Transaction(models.Model):
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='created_transactions')
     created_at = models.DateTimeField(auto_now_add=True)
     
-    # Additional fields for filtering
     metadata = models.JSONField(default=dict, blank=True)
 
     class Meta:
@@ -636,7 +645,7 @@ class Transaction(models.Model):
             models.Index(fields=['transaction_type', 'status']),
             models.Index(fields=['transaction_category', 'created_at']),
             models.Index(fields=['reference_number']),
-            models.Index(fields=['service_submission']),  # New index
+            models.Index(fields=['service_submission']),
         ]
 
     def __str__(self):
@@ -654,6 +663,23 @@ class Transaction(models.Model):
         timestamp = timezone.now().strftime('%Y%m%d%H%M%S')
         random_str = str(random.randint(1000, 9999))
         return f"TXN{timestamp}{random_str}"
+    
+
+    def is_refund_eligible(self):
+        """Check if transaction is eligible for refund"""
+        if timezone.now() - self.created_at < timedelta(hours=24):
+            return False, "Transaction must be at least 24 hours old"
+        
+        if self.status not in ['failed', 'pending']:
+            return False, "Only failed or pending transactions can be refunded"
+        
+        if RefundRequest.objects.filter(transaction=self).exists():
+            return False, "Refund already requested for this transaction"
+        
+        if timezone.now() - self.created_at > timedelta(days=7):
+            return False, "Refund window expired (7 days)"
+        
+        return True, "Transaction is eligible for refund"
 
 
 
@@ -949,3 +975,51 @@ def set_transaction_balances(sender, instance, **kwargs):
             total_deduction = instance.amount + instance.service_charge
             instance.opening_balance = wallet.balance + total_deduction
             instance.closing_balance = wallet.balance
+
+
+class RefundRequest(models.Model):
+    STATUS_CHOICES = (
+        ('pending', 'Pending'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+        ('processed', 'Processed'),
+    )
+    
+    REFUND_TYPES = (
+        ('service_payment', 'Service Payment'),
+        ('money_transfer', 'Money Transfer'),
+        ('other', 'Other'),
+    )
+    
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='refund_requests')
+    transaction = models.ForeignKey(Transaction, on_delete=models.CASCADE, related_name='refund_requests')
+    amount = models.DecimalField(max_digits=15, decimal_places=2)
+    refund_type = models.CharField(max_length=20, choices=REFUND_TYPES)
+    reason = models.TextField()
+    screenshot = models.FileField(upload_to='refunds/', blank=True, null=True)
+    
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    processed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, 
+                                     related_name='processed_refunds')
+    processed_at = models.DateTimeField(null=True, blank=True)
+    admin_notes = models.TextField(blank=True, null=True)
+    
+    refund_id = models.CharField(max_length=50, unique=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+
+
+    def save(self, *args, **kwargs):
+        if not self.refund_id:
+            self.refund_id = self.generate_refund_id()
+        super().save(*args, **kwargs)
+    
+    def generate_refund_id(self):
+        """Generate unique refund ID"""
+        timestamp = timezone.now().strftime('%Y%m%d%H%M%S')
+        random_str = str(random.randint(1000, 9999))
+        return f"REF{timestamp}{random_str}"

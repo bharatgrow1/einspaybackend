@@ -28,7 +28,7 @@ from google.auth.transport import requests as google_requests
 
 from users.models import (Wallet, Transaction,  ServiceCharge, FundRequest, UserService, User, 
                           RolePermission, State, City, FundRequest, EmailOTP, ForgotPasswordOTP, 
-                           MobileOTP, ForgetPinOTP, WalletPinOTP, UserBank )
+                           MobileOTP, ForgetPinOTP, WalletPinOTP, UserBank, RefundRequest )
 
 from services.models import ServiceSubCategory
 from users.permissions import (IsSuperAdmin, IsAdminUser)
@@ -41,7 +41,8 @@ from users.serializers import (LoginSerializer, OTPVerifySerializer, WalletSeria
         StateSerializer, CitySerializer, FundRequestCreateSerializer, FundRequestUpdateSerializer, FundRequestApproveSerializer,
         FundRequestRejectSerializer, RequestWalletPinOTPSerializer, VerifyWalletPinOTPSerializer, SetWalletPinWithOTPSerializer,
         UserBankSerializer, GoogleLoginSerializer, DirectWalletTransferSerializer, UserProfileUpdateSerializer,
-        UserKYCSerializer, MobileOTPLoginSerializer, DirectTransferHistorySerializer, UserPermissionSerializer, ResetWalletPinWithOTPSerializer)
+        UserKYCSerializer, MobileOTPLoginSerializer, DirectTransferHistorySerializer, UserPermissionSerializer, 
+        ResetWalletPinWithOTPSerializer, RefundRequestCreateSerializer, RefundRequestSerializer, RefundActionSerializer)
 
 from commission.models import CommissionTransaction
 
@@ -1128,7 +1129,7 @@ class WalletViewSet(DynamicModelViewSet):
             'email': email
         })
 
-    @action(detail=False, methods=['post'], permission_classes=[AllowAny])  # ✅ Important: AllowAny
+    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
     def verify_forget_pin_otp(self, request):
         """Step 2: Verify OTP for forget PIN - NO AUTH REQUIRED"""
         email = request.data.get('email')
@@ -2550,3 +2551,243 @@ class UserHierarchyViewSet(viewsets.ViewSet):
             'users_by_role': User.objects.values('role').annotate(count=Count('id'))
         })
     
+
+
+    @action(detail=False, methods=['get'])
+    def assignable_users(self, request):
+        user = request.user
+
+        def get_downline_recursive(parent):
+            users = []
+            children = User.objects.filter(created_by=parent)
+
+            for child in children:
+                users.append({
+                    "id": child.id,
+                    "username": child.username,
+                    "role": child.role,
+                })
+                users.extend(get_downline_recursive(child))
+
+            return users
+
+        if user.role == "superadmin":
+            qs = User.objects.exclude(id=user.id)
+            data = [
+                {
+                    "id": u.id,
+                    "username": u.username,
+                    "role": u.role
+                }
+                for u in qs
+            ]
+            return Response({"users": data})
+
+        users = get_downline_recursive(user)
+
+        return Response({
+            "users": users,
+            "count": len(users)
+        })
+
+
+
+class RefundViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = RefundRequestSerializer
+    
+    def get_queryset(self):
+        return RefundRequest.objects.filter(user=self.request.user)
+    
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return RefundRequestCreateSerializer
+        return RefundRequestSerializer
+    
+    @action(detail=False, methods=['post'])
+    def request_refund(self, request):
+        """Retailer raises refund request"""
+        serializer = RefundRequestCreateSerializer(
+            data=request.data, 
+            context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        
+        transaction_id = serializer.validated_data['transaction_id']
+        
+        try:
+            transaction = Transaction.objects.get(
+                id=transaction_id,
+                wallet__user=request.user
+            )
+            
+            is_eligible, message = transaction.is_refund_eligible()
+            if not is_eligible:
+                return Response(
+                    {'error': message}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            refund = RefundRequest.objects.create(
+                user=request.user,
+                transaction=transaction,
+                amount=transaction.amount,
+                refund_type=serializer.validated_data['refund_type'],
+                reason=serializer.validated_data['reason'],
+                screenshot=serializer.validated_data.get('screenshot')
+            )
+            
+            transaction.refund_status = 'requested'
+            transaction.save()
+            
+            return Response({
+                'message': 'Refund request submitted successfully',
+                'refund_id': refund.refund_id,
+                'data': RefundRequestSerializer(refund).data
+            })
+            
+        except Transaction.DoesNotExist:
+            return Response(
+                {'error': 'Transaction not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+    
+    @action(detail=False, methods=['get'])
+    def eligible_transactions(self, request):
+        """Get transactions eligible for refund"""
+        transactions = Transaction.objects.filter(
+            wallet__user=request.user,
+            transaction_type='debit',
+            status__in=['failed', 'pending'],
+            refund_status='none'
+        ).exclude(
+            created_at__lt=timezone.now() - timedelta(days=7)
+        ).exclude(
+            created_at__gt=timezone.now() - timedelta(hours=24)
+        )
+        
+        serializer = TransactionSerializer(transactions, many=True)
+        return Response(serializer.data)
+    
+
+
+class AdminRefundViewSet(viewsets.ViewSet):
+    permission_classes = [IsAdminUser]
+    
+    def list(self, request):
+        """Get all refund requests (with filters)"""
+        status_filter = request.query_params.get('status', None)
+        user_id = request.query_params.get('user_id', None)
+        
+        queryset = RefundRequest.objects.all()
+        
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        if user_id:
+            queryset = queryset.filter(user_id=user_id)
+        
+        serializer = RefundRequestSerializer(queryset, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def pending_refunds(self, request):
+        """Get all pending refunds"""
+        refunds = RefundRequest.objects.filter(status='pending')
+        serializer = RefundRequestSerializer(refunds, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'])
+    def process_refund(self, request, pk=None):
+        """Process refund request"""
+        try:
+            refund = RefundRequest.objects.get(id=pk)
+        except RefundRequest.DoesNotExist:
+            return Response(
+                {'error': 'Refund request not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        serializer = RefundActionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        action = serializer.validated_data['action']
+        admin_notes = serializer.validated_data.get('admin_notes', '')
+        
+        try:
+            with db_transaction.atomic():
+                if action == 'approve':
+                    self.process_wallet_refund(refund, request.user)
+                    refund.status = 'approved'
+                    
+                elif action == 'reject':
+                    refund.status = 'rejected'
+                    
+                elif action == 'process':
+                    refund.status = 'processed'
+                
+                refund.processed_by = request.user
+                refund.processed_at = timezone.now()
+                refund.admin_notes = admin_notes
+                refund.save()
+                
+                refund.transaction.refund_status = refund.status
+                refund.transaction.refund_reference = refund.refund_id
+                refund.transaction.save()
+                
+                self.send_refund_notification(refund)
+                
+                return Response({
+                    'message': f'Refund {action}ed successfully',
+                    'data': RefundRequestSerializer(refund).data
+                })
+                
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to process refund: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def process_wallet_refund(self, refund, admin_user):
+        """Add refund amount back to wallet"""
+        wallet = refund.user.wallet
+        opening_balance = wallet.balance
+        
+        wallet.add_amount(refund.amount)
+        
+        Transaction.objects.create(
+            wallet=wallet,
+            amount=refund.amount,
+            net_amount=refund.amount,
+            service_charge=Decimal('0.00'),
+            transaction_type='credit',
+            transaction_category='refund',
+            status='success',
+            description=f'Refund for transaction {refund.transaction.reference_number}',
+            created_by=admin_user,
+            opening_balance=opening_balance,
+            closing_balance=wallet.balance,
+            metadata={
+                'refund_id': refund.refund_id,
+                'original_transaction_id': refund.transaction.id,
+                'reason': refund.reason
+            }
+        )
+    
+    def send_refund_notification(self, refund):
+        """Send notification to user about refund status"""
+        pass
+    
+    @action(detail=False, methods=['get'])
+    def stats(self, request):
+        """Get refund statistics"""
+        stats = {
+            'total_refunds': RefundRequest.objects.count(),
+            'pending_refunds': RefundRequest.objects.filter(status='pending').count(),
+            'approved_refunds': RefundRequest.objects.filter(status='approved').count(),
+            'rejected_refunds': RefundRequest.objects.filter(status='rejected').count(),
+            'processed_refunds': RefundRequest.objects.filter(status='processed').count(),
+            'total_refund_amount': RefundRequest.objects.filter(
+                status__in=['approved', 'processed']
+            ).aggregate(total=Sum('amount'))['total'] or 0,
+        }
+        return Response(stats)
