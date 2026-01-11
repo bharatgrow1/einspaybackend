@@ -249,6 +249,10 @@ class bbpsViewSet(viewsets.ViewSet):
                 bbps_txn.status = 'success'
                 bbps_txn.payment_status = 'paid'
                 
+                if wallet_transaction and result.get('eko_transaction_ref'):
+                    wallet_transaction.eko_tid = result.get('eko_transaction_ref')
+                    wallet_transaction.save()
+                
                 try:
                     from commission.views import CommissionManager
                     

@@ -151,7 +151,7 @@ class TransactionSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'wallet', 'wallet_user', 'amount', 'net_amount', 'service_charge',
             'transaction_type', 'transaction_category', 'status', 'description',
-            'reference_number', 'recipient_user', 'recipient_username',
+            'reference_number', 'recipient_user', 'recipient_username','eko_tid','eko_client_ref_id',
             'service_submission', 'service_submission_details', 'service_name',
             'created_by', 'created_by_username', 'created_at', 'metadata','opening_balance', 'closing_balance'
         ]
