@@ -588,6 +588,7 @@ class Transaction(models.Model):
         ('success', 'Success'),
         ('failed', 'Failed'),
         ('pending', 'Pending'),
+        ('processing', 'Processing'),
         ('cancelled', 'Cancelled'),
     )
 
@@ -610,6 +611,8 @@ class Transaction(models.Model):
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='success')
     description = models.CharField(max_length=255)
     reference_number = models.CharField(max_length=100, unique=True, blank=True)
+    eko_tid = models.CharField(max_length=100, blank=True, null=True)
+    eko_client_ref_id = models.CharField(max_length=100, blank=True, null=True)
     recipient_user = models.ForeignKey(
         settings.AUTH_USER_MODEL, 
         on_delete=models.SET_NULL, 
@@ -666,20 +669,23 @@ class Transaction(models.Model):
     
 
     def is_refund_eligible(self):
-        """Check if transaction is eligible for refund"""
-        if timezone.now() - self.created_at < timedelta(hours=24):
-            return False, "Transaction must be at least 24 hours old"
-        
-        if self.status not in ['failed', 'pending']:
-            return False, "Only failed or pending transactions can be refunded"
-        
+        if self.transaction_type != 'debit':
+            return False, "Not a debit transaction"
+
+        if self.status != 'success':
+            return False, "Amount was not deducted"
+
+        if self.refund_status != 'none':
+            return False, "Refund already processed"
+
         if RefundRequest.objects.filter(transaction=self).exists():
-            return False, "Refund already requested for this transaction"
-        
+            return False, "Refund already requested"
+
         if timezone.now() - self.created_at > timedelta(days=7):
-            return False, "Refund window expired (7 days)"
-        
+            return False, "Refund window expired"
+
         return True, "Transaction is eligible for refund"
+
 
 
 

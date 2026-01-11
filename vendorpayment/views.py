@@ -16,6 +16,7 @@ from .services.receipt_generator import VendorReceiptGenerator
 from rest_framework.pagination import PageNumberPagination
 from django.db.models import Q
 from users.models import User
+from datetime import timedelta
 
 
 logger = logging.getLogger(__name__)
@@ -161,6 +162,21 @@ class VendorPaymentViewSet(viewsets.ViewSet):
 
 
             vendor_payment.save()
+
+            try:
+                wallet_transaction = Transaction.objects.filter(
+                    wallet=wallet,
+                    description__contains=f"Vendor payment to {data['recipient_name']}",
+                    created_at__gte=timezone.now() - timedelta(minutes=5)
+                ).order_by('-created_at').first()
+                
+                if wallet_transaction and eko_data.get('tid'):
+                    wallet_transaction.eko_tid = eko_data['tid']
+                    wallet_transaction.eko_client_ref_id = eko_data.get('client_ref_id')
+                    wallet_transaction.save()
+                    logger.info(f" Vendor EKO TID saved: {eko_data['tid']}")
+            except Exception as e:
+                logger.error(f" Failed to save vendor EKO TID: {str(e)}")
 
             
             if vendor_payment.status == "failed":

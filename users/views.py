@@ -2663,7 +2663,7 @@ class RefundViewSet(viewsets.ModelViewSet):
         ).exclude(
             created_at__lt=timezone.now() - timedelta(days=7)
         ).exclude(
-            created_at__gt=timezone.now() - timedelta(hours=24)
+            created_at__gt=timezone.now() - timedelta(minutes=5)
         )
         
         serializer = TransactionSerializer(transactions, many=True)

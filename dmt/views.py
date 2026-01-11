@@ -10,7 +10,7 @@ from django.contrib.auth import get_user_model
 from django.db import models
 from rest_framework.permissions import IsAdminUser
 from dmt.permissions import IsSuperAdmin
-
+from users.models import Transaction
 
 
 from .services.dmt_manager import dmt_manager
@@ -226,6 +226,7 @@ class DMTTransactionViewSet(viewsets.ViewSet):
         Initiate DMT transaction with wallet payment
         POST /api/dmt/transaction/initiate_with_wallet/
         """
+        
         try:
             serializer = DMTWalletTransactionSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
@@ -236,6 +237,21 @@ class DMTTransactionViewSet(viewsets.ViewSet):
                 user=user,
                 transaction_data=serializer.validated_data
             )
+
+            if result.get('status') == 0:
+                try:
+                    wallet_transaction = Transaction.objects.filter(
+                        wallet=user.wallet,
+                        transaction_category='dmt_transfer'
+                    ).order_by('-created_at').first()
+                    
+                    if wallet_transaction and result.get('data', {}).get('tid'):
+                        wallet_transaction.eko_tid = result['data']['tid']
+                        wallet_transaction.eko_client_ref_id = result['data'].get('client_ref_id')
+                        wallet_transaction.save()
+                        logger.info(f" DMT EKO TID saved: {result['data']['tid']}")
+                except Exception as e:
+                    logger.error(f" Failed to save DMT EKO TID: {str(e)}")
             
             return Response(result)
             
