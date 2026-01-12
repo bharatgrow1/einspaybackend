@@ -3,7 +3,6 @@ from pathlib import Path
 from datetime import timedelta
 import os
 from dotenv import load_dotenv
-from celery.schedules import crontab
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -34,6 +33,7 @@ INSTALLED_APPS = [
     'bbps',
     'vendorpayment',
     'aeps',
+    'django_crontab',
 ]
 
 MIDDLEWARE = [
@@ -220,11 +220,9 @@ SMSDEALNOW_TEMPLATE_ID = os.getenv("SMSDEALNOW_TEMPLATE_ID")
 GOOGLE_CLIENT_ID = "922448588004-avo3qutef79mnj56lhtfgbqja5agljms.apps.googleusercontent.com"
 
 
-
-
-CELERY_BEAT_SCHEDULE = {
-    'auto-resolve-transactions-every-2-min': {
-        'task': 'users.tasks.auto_resolve_transactions_task',
-        'schedule': 120.0,
-    },
-}
+CRONJOBS = [
+    (
+        '*/5 * * * *',
+        'users.cron.celery.auto_resolve_transactions.auto_resolve_transactions'
+    ),
+]
