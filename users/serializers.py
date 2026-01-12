@@ -938,10 +938,56 @@ class DirectTransferHistorySerializer(serializers.ModelSerializer):
 
 
 class RefundRequestCreateSerializer(serializers.ModelSerializer):
+    transaction_id = serializers.IntegerField(write_only=True, required=True)
+    amount = serializers.DecimalField(max_digits=15, decimal_places=2, read_only=True)
+    
     class Meta:
         model = RefundRequest
         fields = ['transaction_id', 'amount', 'refund_type', 'reason', 'screenshot']
-        read_only_fields = ['user', 'status']
+        read_only_fields = ['user', 'status', 'amount']
+    
+    def validate_transaction_id(self, value):
+        """Validate that transaction exists and belongs to user"""
+        request = self.context.get('request')
+        if not request:
+            raise serializers.ValidationError("Request context is missing")
+        
+        try:
+            transaction = Transaction.objects.get(
+                id=value,
+                wallet__user=request.user
+            )
+            return value
+        except Transaction.DoesNotExist:
+            raise serializers.ValidationError("Transaction not found")
+    
+    def create(self, validated_data):
+        """Create RefundRequest instance"""
+        request = self.context['request']
+        transaction_id = validated_data.pop('transaction_id')
+        
+        transaction = Transaction.objects.get(
+            id=transaction_id,
+            wallet__user=request.user
+        )
+        
+        is_eligible, message = transaction.is_refund_eligible()
+        if not is_eligible:
+            raise serializers.ValidationError(message)
+        
+        refund = RefundRequest.objects.create(
+            user=request.user,
+            transaction=transaction,
+            amount=transaction.amount,
+            refund_type=validated_data['refund_type'],
+            reason=validated_data['reason'],
+            screenshot=validated_data.get('screenshot')
+        )
+        
+        transaction.refund_status = 'requested'
+        transaction.save()
+        
+        return refund
 
 class RefundRequestSerializer(serializers.ModelSerializer):
     user_username = serializers.CharField(source='user.username', read_only=True)
