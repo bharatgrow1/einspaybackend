@@ -2679,8 +2679,23 @@ class AdminRefundViewSet(viewsets.ViewSet):
         status_filter = request.query_params.get('status', None)
         user_id = request.query_params.get('user_id', None)
         
-        queryset = RefundRequest.objects.all()
-        
+        user = request.user
+        if user.role == "superadmin":
+            queryset = RefundRequest.objects.all()
+
+        elif user.role == "admin":
+            downline_users = User.objects.filter(created_by=user)
+            queryset = RefundRequest.objects.filter(
+                Q(user=user) | Q(user__in=downline_users)
+            )
+
+        elif user.role in ["master", "dealer"]:
+            downline_users = User.objects.filter(created_by=user)
+            queryset = RefundRequest.objects.filter(user__in=downline_users)
+
+        else:
+            queryset = RefundRequest.objects.none()
+
         if status_filter:
             queryset = queryset.filter(status=status_filter)
         if user_id:
@@ -2692,7 +2707,28 @@ class AdminRefundViewSet(viewsets.ViewSet):
     @action(detail=False, methods=['get'])
     def pending_refunds(self, request):
         """Get all pending refunds"""
-        refunds = RefundRequest.objects.filter(status='pending')
+        user = request.user
+        if user.role == "superadmin":
+            refunds = RefundRequest.objects.filter(status="pending")
+
+        elif user.role == "admin":
+            downline_users = User.objects.filter(created_by=user)
+            refunds = RefundRequest.objects.filter(
+                status="pending",
+                user__in=downline_users
+            )
+
+        elif user.role in ["master", "dealer"]:
+            downline_users = User.objects.filter(created_by=user)
+            refunds = RefundRequest.objects.filter(
+                status="pending",
+                user__in=downline_users
+            )
+
+        else:
+            refunds = RefundRequest.objects.none()
+
+
         serializer = RefundRequestSerializer(refunds, many=True)
         return Response(serializer.data)
     
@@ -2701,6 +2737,17 @@ class AdminRefundViewSet(viewsets.ViewSet):
         """Process refund request"""
         try:
             refund = RefundRequest.objects.get(id=pk)
+            user = request.user
+            if user.role != "superadmin":
+                allowed_users = User.objects.filter(created_by=user)
+
+                if refund.user != user and refund.user not in allowed_users:
+                    return Response(
+                        {"error": "You are not allowed to process this refund"},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+
+
         except RefundRequest.DoesNotExist:
             return Response(
                 {'error': 'Refund request not found'}, 
@@ -2709,6 +2756,12 @@ class AdminRefundViewSet(viewsets.ViewSet):
         
         serializer = RefundActionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        if refund.status != "pending":
+            return Response(
+                {"error": "This refund is already processed"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         
         action = serializer.validated_data['action']
         admin_notes = serializer.validated_data.get('admin_notes', '')
@@ -2779,15 +2832,33 @@ class AdminRefundViewSet(viewsets.ViewSet):
     
     @action(detail=False, methods=['get'])
     def stats(self, request):
-        """Get refund statistics"""
+
+        user = request.user
+        if user.role == "superadmin":
+            queryset = RefundRequest.objects.all()
+
+        elif user.role == "admin":
+            downline_users = User.objects.filter(created_by=user)
+            queryset = RefundRequest.objects.filter(
+                Q(user=user) | Q(user__in=downline_users)
+            )
+
+        elif user.role in ["master", "dealer"]:
+            downline_users = User.objects.filter(created_by=user)
+            queryset = RefundRequest.objects.filter(user__in=downline_users)
+
+        else:
+            queryset = RefundRequest.objects.none()
+
         stats = {
-            'total_refunds': RefundRequest.objects.count(),
-            'pending_refunds': RefundRequest.objects.filter(status='pending').count(),
-            'approved_refunds': RefundRequest.objects.filter(status='approved').count(),
-            'rejected_refunds': RefundRequest.objects.filter(status='rejected').count(),
-            'processed_refunds': RefundRequest.objects.filter(status='processed').count(),
-            'total_refund_amount': RefundRequest.objects.filter(
+            'total_refunds': queryset.count(),
+            'pending_refunds': queryset.filter(status='pending').count(),
+            'approved_refunds': queryset.filter(status='approved').count(),
+            'rejected_refunds': queryset.filter(status='rejected').count(),
+            'processed_refunds': queryset.filter(status='processed').count(),
+            'total_refund_amount': queryset.filter(
                 status__in=['approved', 'processed']
             ).aggregate(total=Sum('amount'))['total'] or 0,
         }
+
         return Response(stats)
