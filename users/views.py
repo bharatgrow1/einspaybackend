@@ -2248,6 +2248,18 @@ class CityViewSet(viewsets.ReadOnlyModelViewSet):
 class FundRequestViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter
+    ]
+
+    filterset_fields = ['status']
+    search_fields = ['reference_number', 'remarks', 'user__username']
+    ordering_fields = ['created_at', 'amount', 'updated_at']
+    ordering = ['-created_at']
+
+
 
     def get_permissions(self):
         """Custom permissions for fund requests"""
@@ -2257,7 +2269,6 @@ class FundRequestViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated()]
         return [IsAuthenticated()]
 
-    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['reference_number', 'remarks', 'user__username']
     ordering_fields = ['created_at', 'amount', 'updated_at']
     ordering = ['-created_at']
@@ -2283,35 +2294,32 @@ class FundRequestViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
 
-        # Superadmin → sabki history
         if user.role == "superadmin":
-            return FundRequest.objects.all().select_related(
-                "user", "processed_by"
-            ).order_by("-created_at")
+            qs = FundRequest.objects.all()
 
-        # Admin → sab except superadmin
-        if user.role == "admin":
-            return FundRequest.objects.exclude(
-                user__role="superadmin"
-            ).select_related(
-                "user", "processed_by"
-            ).order_by("-created_at")
+        elif user.role == "admin":
+            qs = FundRequest.objects.exclude(user__role="superadmin")
 
-        # Master / Dealer → apni + downline ki
-        if user.role in ["master", "dealer"]:
+        elif user.role in ["master", "dealer"]:
             downline_users = User.objects.filter(created_by=user)
-            return FundRequest.objects.filter(
+            qs = FundRequest.objects.filter(
                 Q(user=user) | Q(user__in=downline_users)
-            ).select_related(
-                "user", "processed_by"
-            ).order_by("-created_at")
+            )
 
-        # Retailer → sirf apni
-        return FundRequest.objects.filter(
-            user=user
-        ).select_related(
-            "user", "processed_by"
-        ).order_by("-created_at")
+        else:
+            qs = FundRequest.objects.filter(user=user)
+
+        from_date = self.request.query_params.get("from_date")
+        to_date = self.request.query_params.get("to_date")
+
+        if from_date:
+            qs = qs.filter(txn_date__gte=from_date)
+
+        if to_date:
+            qs = qs.filter(txn_date__lte=to_date)
+
+        return qs.select_related("user", "processed_by").order_by("-created_at")
+
 
     
     def perform_create(self, serializer):
@@ -2435,6 +2443,8 @@ class FundRequestViewSet(viewsets.ModelViewSet):
         
         return Response(stats)
     
+
+
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
     def bank_list(self, request):
         """Get list of available banks"""
@@ -2444,13 +2454,35 @@ class FundRequestViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
     def bank_options(self, request):
-        """Get bank options for dropdown"""
-        banks = FundRequest.BANKS
+        """
+        FUND REQUEST BANK DROPDOWN RULES:
+
+        deposit_banks:
+            - sirf ADMIN + SUPERADMIN ke banks
+
+        your_banks:
+            - logged-in user ke banks hi
+            - retailer / dealer / master / admin sab ke liye apna-apna
+        """
+        user = request.user
+
+        # ✅ Deposit banks → Admin + Superadmin
+        deposit_banks = UserBank.objects.filter(
+            user__role__in=["admin", "superadmin"],
+            is_active=True
+        ).select_related("user")
+
+        # ✅ Your banks → Sirf current user ke
+        your_banks = UserBank.objects.filter(
+            user=user,
+            is_active=True
+        )
+
         return Response({
-            'deposit_banks': [{'value': bank[0], 'label': bank[1]} for bank in banks],
-            'your_banks': [{'value': bank[0], 'label': bank[1]} for bank in banks]
+            "deposit_banks": UserBankSerializer(deposit_banks, many=True).data,
+            "your_banks": UserBankSerializer(your_banks, many=True).data
         })
-    
+
 
 
 class UserHierarchyViewSet(viewsets.ViewSet):
