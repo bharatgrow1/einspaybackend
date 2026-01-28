@@ -766,6 +766,7 @@ class FundRequest(models.Model):
         related_name='fund_requests'
     )
     amount = models.DecimalField(max_digits=15, decimal_places=2)
+    txn_date = models.DateTimeField(null=True, blank=True,help_text="Transaction / Deposit Date provided by user")
     transaction_type = models.CharField(max_length=20, choices=TRANSACTION_TYPE_CHOICES)
     deposit_bank = models.CharField(max_length=300)
     Your_Bank = models.CharField(max_length=255)

@@ -335,18 +335,22 @@ class OperatorCommissionSerializer(serializers.ModelSerializer):
     operator_type = serializers.CharField(source='operator.operator_type', read_only=True)
     operator_id = serializers.CharField(source='operator.operator_id', read_only=True)
     commission_plan_name = serializers.CharField(source='commission_plan.name', read_only=True)
+    service_subcategory_name = serializers.CharField(
+        source='service_subcategory.name',
+        read_only=True
+    )
     superadmin_commission = serializers.SerializerMethodField()
     total_distributed = serializers.SerializerMethodField()
     
     class Meta:
         model = OperatorCommission
         fields = [
-            'id', 'operator', 'operator_id', 'operator_name', 'operator_type',
+            'id', 'operator', 'operator_id', 'operator_name', 'operator_type','service_subcategory',
+            'service_subcategory_name',
             'operator_circle', 'commission_plan', 'commission_plan_name',
             'commission_type', 'commission_value', 'admin_commission', 
             'master_commission', 'dealer_commission', 'retailer_commission',
-            'superadmin_commission', 'total_distributed', 'min_amount',
-            'max_amount', 'is_active', 'created_at', 'updated_at'
+            'superadmin_commission', 'total_distributed', 'is_active', 'created_at', 'updated_at'
         ]
         read_only_fields = [
             'operator_id', 'operator_name', 'operator_type', 

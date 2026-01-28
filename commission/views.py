@@ -1162,48 +1162,51 @@ class CommissionDashboardViewSet(viewsets.ViewSet):
 
 class OperatorCommissionViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
-    queryset = OperatorCommission.objects.all()
+    queryset = (OperatorCommission.objects.select_related('operator', 'commission_plan', 'service_subcategory'))
     serializer_class = OperatorCommissionSerializer
     
     def get_queryset(self):
-        """Filter operators based on various parameters"""
         queryset = super().get_queryset()
-        
-        # Filter by operator type
+
+        service_subcategory_id = self.request.query_params.get('service_subcategory')
+        if service_subcategory_id:
+            queryset = queryset.filter(service_subcategory_id=service_subcategory_id)
+
         operator_type = self.request.query_params.get('operator_type')
         if operator_type:
-            queryset = queryset.filter(operator__operator_type=operator_type)
-        
-        # Filter by operator
+            queryset = queryset.filter(operator_type=operator_type)
+
         operator_id = self.request.query_params.get('operator_id')
         if operator_id:
             queryset = queryset.filter(operator_id=operator_id)
-        
-        # Filter by circle
+
         circle = self.request.query_params.get('circle')
         if circle:
             queryset = queryset.filter(operator_circle=circle)
-        
-        # Filter by commission plan
+
         commission_plan = self.request.query_params.get('commission_plan')
         if commission_plan:
             queryset = queryset.filter(commission_plan_id=commission_plan)
-        
-        # Filter by status
+
         is_active = self.request.query_params.get('is_active')
         if is_active is not None:
             queryset = queryset.filter(is_active=is_active.lower() == 'true')
-        
+
         return queryset
+
+
     
     def perform_create(self, serializer):
-        """Save with operator information"""
         operator = serializer.validated_data.get('operator')
+        service_subcategory = serializer.validated_data.get('service_subcategory')
+
         serializer.save(
             operator_name=operator.operator_name,
             operator_type=operator.operator_type,
+            service_subcategory=service_subcategory,
             created_by=self.request.user
         )
+
     
     @action(detail=False, methods=['get'])
     def operator_types(self, request):
