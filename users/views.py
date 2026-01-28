@@ -237,16 +237,17 @@ class UserBankViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
 
+        qs = UserBank.objects.all()
+
         if user.role == "superadmin":
-            return UserBank.objects.all()
+            return qs
 
         if user.role in ["admin", "master", "dealer"]:
             downline_users = User.objects.filter(created_by=user)
-            return UserBank.objects.filter(
-                Q(user=user) | Q(user__in=downline_users)
-            )
+            return qs.filter(user__in=[user, *downline_users])
 
-        return UserBank.objects.filter(user=user)
+        return qs.filter(user=user)
+
 
     def perform_create(self, serializer):
         """
