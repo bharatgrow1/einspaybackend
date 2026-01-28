@@ -260,7 +260,7 @@ class FundRequestHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = FundRequest
         fields = [
-            'id', 'reference_number', 'amount', 'status', 'transaction_type',
+            'id', 'reference_number', 'amount', 'txn_date', 'status', 'transaction_type',
             'deposit_bank', 'Your_Bank', 'created_at', 'processed_at'
         ]
 
@@ -561,7 +561,7 @@ class FundRequestCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = FundRequest
         fields = [
-            'id', 'user', 'user_username', 'user_role', 'amount', 
+            'id', 'user', 'user_username', 'user_role', 'amount', 'txn_date', 
             'transaction_type', 'deposit_bank', 'Your_Bank', 'account_number', 
             'reference_number', 'remarks', 'screenshot', 'status',
             'created_at', 'onboarder_username'
@@ -616,6 +616,7 @@ class FundRequestDetailSerializer(serializers.ModelSerializer):
             'user_role',
 
             'amount',
+            'txn_date',
             'service_charge',
             'wallet_credit',
             'transaction_type',
@@ -651,14 +652,14 @@ class FundRequestUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = FundRequest
         fields = [
-            'id', 'user', 'user_username', 'amount', 'transaction_type',
+            'id', 'user', 'user_username', 'amount', 'txn_date', 'transaction_type',
             'deposit_bank', 'Your_Bank', 'account_number', 'reference_number', 'remarks',
             'screenshot', 'status', 'admin_notes', 'processed_by',
             'processed_by_username', 'processed_at', 'created_at',
             'updated_at', 'onboarder_username'
         ]
         read_only_fields = [
-            'user', 'amount', 'transaction_type', 'deposit_bank', 'Your_Bank',
+            'user', 'amount', 'txn_date', 'transaction_type', 'deposit_bank', 'Your_Bank',
             'account_number', 'reference_number', 'remarks', 'screenshot',
             'created_at', 'updated_at', 'processed_at'
         ]

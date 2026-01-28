@@ -253,6 +253,7 @@ class OperatorCommission(models.Model):
     )
     
     operator = models.ForeignKey('bbps.Operator', on_delete=models.CASCADE, related_name='commissions')
+    service_subcategory = models.ForeignKey('services.ServiceSubCategory',on_delete=models.CASCADE,related_name='operator_commissions')
     operator_name = models.CharField(max_length=255)
     operator_type = models.CharField(max_length=50)
     operator_circle = models.CharField(max_length=100, blank=True, null=True)
@@ -283,16 +284,13 @@ class OperatorCommission(models.Model):
         default=0
     )
     
-    min_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    max_amount = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
-    
     is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:
-        unique_together = ['operator', 'commission_plan', 'operator_circle']
+        unique_together = ['operator', 'service_subcategory', 'commission_plan', 'operator_circle']
         verbose_name = "Operator Commission"
         verbose_name_plural = "Operator Commissions"
     
