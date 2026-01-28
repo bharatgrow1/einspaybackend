@@ -9,6 +9,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.getenv("SECRET_KEY")
 
+# SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+
 DEBUG = True
 
 ALLOWED_HOSTS = ["*"]
@@ -112,11 +115,9 @@ USE_TZ = True
 
 
 STATIC_URL = 'static/'
-STATIC_ROOT = "einspaybackend/static/"
-
+STATIC_ROOT = BASE_DIR / 'static'
 MEDIA_URL = '/media/'
-MEDIA_ROOT = 'einspaybackend/media'
-
+MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
