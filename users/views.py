@@ -24,6 +24,8 @@ from django.core.cache import cache
 from rest_framework.exceptions import PermissionDenied
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
+from datetime import datetime, time
+from django.utils.timezone import make_aware
 
 
 from users.models import (Wallet, Transaction,  ServiceCharge, FundRequest, UserService, User, 
@@ -2269,9 +2271,6 @@ class FundRequestViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated()]
         return [IsAuthenticated()]
 
-    search_fields = ['reference_number', 'remarks', 'user__username']
-    ordering_fields = ['created_at', 'amount', 'updated_at']
-    ordering = ['-created_at']
     
     def get_serializer_class(self):
         if self.action == 'create':
@@ -2316,7 +2315,13 @@ class FundRequestViewSet(viewsets.ModelViewSet):
             qs = qs.filter(txn_date__gte=from_date)
 
         if to_date:
-            qs = qs.filter(txn_date__lte=to_date)
+            end_date = make_aware(
+                datetime.combine(
+                    datetime.strptime(to_date, "%Y-%m-%d"),
+                    time.max
+                )
+            )
+            qs = qs.filter(txn_date__lte=end_date)
 
         return qs.select_related("user", "processed_by").order_by("-created_at")
 
@@ -2444,7 +2449,7 @@ class FundRequestViewSet(viewsets.ModelViewSet):
         return Response(stats)
     
 
-
+    
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
     def bank_list(self, request):
         """Get list of available banks"""
