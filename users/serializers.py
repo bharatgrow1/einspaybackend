@@ -563,7 +563,7 @@ class FundRequestCreateSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'user', 'user_username', 'user_role', 'amount', 'txn_date', 
             'transaction_type', 'deposit_bank', 'Your_Bank', 'account_number', 
-            'reference_number', 'remarks', 'screenshot', 'status',
+            'reference_number', 'utr_number', 'remarks', 'screenshot', 'status',
             'created_at', 'onboarder_username'
         ]
         read_only_fields = ['reference_number', 'status', 'created_at']
@@ -614,7 +614,6 @@ class FundRequestDetailSerializer(serializers.ModelSerializer):
             'user',
             'user_username',
             'user_role',
-
             'amount',
             'txn_date',
             'service_charge',
@@ -623,17 +622,14 @@ class FundRequestDetailSerializer(serializers.ModelSerializer):
             'deposit_bank',
             'Your_Bank',
             'account_number',
-
+            'utr_number', 
             'reference_number',
             'remarks',
             'screenshot',
-
             'status',
-
             'admin_notes',
             'processed_by_username',
             'processed_at',
-
             'created_at',
             'updated_at',
             'onboarder_username',

@@ -772,6 +772,7 @@ class FundRequest(models.Model):
     Your_Bank = models.CharField(max_length=255)
     account_number = models.CharField(max_length=50, blank=True, null=True)
     reference_number = models.CharField(max_length=100, unique=True)
+    utr_number = models.CharField(max_length=100,blank=True,null=True,help_text="UTR / Bank Reference Number provided by user")
     service_charge = models.DecimalField(max_digits=15,decimal_places=2,default=0.00)
     wallet_credit = models.DecimalField(max_digits=15,decimal_places=2,default=0.00)
     remarks = models.TextField(blank=True, null=True)
