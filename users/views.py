@@ -24,13 +24,11 @@ from django.core.cache import cache
 from rest_framework.exceptions import PermissionDenied
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
-from datetime import datetime, time
-from django.utils.timezone import make_aware
 
 
 from users.models import (Wallet, Transaction,  ServiceCharge, FundRequest, UserService, User, 
                           RolePermission, State, City, FundRequest, EmailOTP, ForgotPasswordOTP, 
-                           MobileOTP, ForgetPinOTP, WalletPinOTP, UserBank, RefundRequest )
+                           MobileOTP, ForgetPinOTP, WalletPinOTP, UserBank )
 
 from services.models import ServiceSubCategory
 from users.permissions import (IsSuperAdmin, IsAdminUser)
@@ -44,11 +42,28 @@ from users.serializers import (LoginSerializer, OTPVerifySerializer, WalletSeria
         FundRequestRejectSerializer, RequestWalletPinOTPSerializer, VerifyWalletPinOTPSerializer, SetWalletPinWithOTPSerializer,
         UserBankSerializer, GoogleLoginSerializer, DirectWalletTransferSerializer, UserProfileUpdateSerializer,
         UserKYCSerializer, MobileOTPLoginSerializer, DirectTransferHistorySerializer, UserPermissionSerializer, 
-        ResetWalletPinWithOTPSerializer, RefundRequestCreateSerializer, RefundRequestSerializer, RefundActionSerializer)
+        ResetWalletPinWithOTPSerializer, PasswordlessLoginInitiateSerializer)
 
 from commission.models import CommissionTransaction
 
 import logging
+
+
+
+def get_downline_users(user, role):
+    users = []
+
+    def recurse(parent):
+        children = User.objects.filter(parent_user=parent)
+        for child in children:
+            if child.role == role:
+                users.append(child)
+            recurse(child)
+
+    recurse(user)
+    return users
+
+
 
 logger = logging.getLogger(__name__)
 sms_otp_provider = SMSDealNowOTPProvider()
@@ -239,16 +254,10 @@ class UserBankViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
 
-        qs = UserBank.objects.all()
-
         if user.role == "superadmin":
-            return qs
+            return UserBank.objects.all()
 
-        if user.role in ["admin", "master", "dealer"]:
-            downline_users = User.objects.filter(created_by=user)
-            return qs.filter(user__in=[user, *downline_users])
-
-        return qs.filter(user=user)
+        return UserBank.objects.filter(user=user)
 
 
     def perform_create(self, serializer):
@@ -270,9 +279,7 @@ class UserBankViewSet(viewsets.ModelViewSet):
             )
 
         if request_user.role in ["admin", "master", "dealer"]:
-            is_downline = (
-                target_user.created_by == request_user
-            )
+            is_downline = (target_user.parent_user == request_user)
 
             if target_user != request_user and not is_downline:
                 raise PermissionDenied(
@@ -284,10 +291,24 @@ class UserBankViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def admin_banks(self, request):
-        admin_users = User.objects.filter(role__in=['admin', 'superadmin'], is_active=True)
-        banks = UserBank.objects.filter(user__in=admin_users)
+        user = request.user
+
+        if user.role == "superadmin":
+            banks = UserBank.objects.filter(user=user)
+
+        elif user.role == "admin":
+            banks = UserBank.objects.filter(user__role="superadmin")
+
+        else:
+            parent = user.parent_user
+            while parent and parent.role not in ["admin", "superadmin"]:
+                parent = parent.parent_user
+
+            banks = UserBank.objects.filter(user=parent) if parent else UserBank.objects.none()
+
         serializer = UserBankSerializer(banks, many=True)
         return Response(serializer.data)
+
 
 
 
@@ -650,6 +671,173 @@ class AuthViewSet(viewsets.ViewSet):
 
 
 
+    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
+    def initiate_passwordless_login(self, request):
+        """Step 1: Request OTP for passwordless login"""
+        serializer = PasswordlessLoginInitiateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        user = serializer.validated_data['user']
+        
+        # Rate limiting
+        cache_key = f"passwordless_login_{user.id}"
+        if cache.get(cache_key):
+            return Response(
+                {'error': 'Please wait 30 seconds before requesting new OTP'},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+        
+        # Generate and send OTP via email
+        otp_obj, _ = EmailOTP.objects.get_or_create(user=user)
+        otp = otp_obj.generate_otp()
+        
+        try:
+            send_otp_email(
+                user.email, 
+                otp, 
+                is_password_reset=False,
+                purpose='passwordless_login'
+            )
+        except Exception as e:
+            logger.error(f"Failed to send passwordless login OTP: {e}")
+            return Response(
+                {'error': 'Failed to send OTP. Please try again.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        # Set rate limit
+        cache.set(cache_key, True, 30)
+        
+        return Response({
+            'success': True,
+            'message': 'OTP sent to your registered email',
+            'identifier': request.data['username_or_email'],
+            'email': user.email if '@' not in request.data['username_or_email'] else 'hidden'
+        })
+    
+    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
+    def verify_passwordless_login(self, request):
+        """Step 2: Verify OTP and login without password"""
+        username_or_email = request.data.get('username_or_email')
+        otp = request.data.get('otp')
+        
+        if not username_or_email or not otp:
+            return Response(
+                {'error': 'Username/email and OTP are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Find user
+        user = None
+        if '@' in username_or_email:
+            user = User.objects.filter(email__iexact=username_or_email).first()
+        else:
+            user = User.objects.filter(username__iexact=username_or_email).first()
+            if not user:
+                user = User.objects.filter(role_uid=username_or_email).first()
+        
+        if not user:
+            return Response(
+                {'error': 'Invalid credentials'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+   
+        # Verify OTP
+        try:
+            otp_obj = EmailOTP.objects.get(user=user, otp=otp)
+        except EmailOTP.DoesNotExist:
+            return Response(
+                {'error': 'Invalid OTP'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if otp_obj.is_expired():
+            return Response({'error': 'OTP expired'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Clean up OTP
+        otp_obj.delete()
+        
+        # Login the user
+        refresh = RefreshToken.for_user(user)
+        
+        needs_pin_setup = not hasattr(user, 'wallet') or not user.wallet.is_pin_set
+        
+        return Response({
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+            'role': user.role,
+            'user_id': user.id,
+            'username': user.username,
+            'needs_pin_setup': needs_pin_setup,
+            'is_pin_set': user.wallet.is_pin_set if hasattr(user, 'wallet') else False,
+            'permissions': list(user.get_all_permissions()),
+            'message': 'Login successful'
+        })
+    
+    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
+    def initiate_mobile_passwordless_login(self, request):
+        """Passwordless login using mobile OTP"""
+        serializer = MobileOTPLoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        mobile = serializer.validated_data['mobile']
+        cleaned_mobile = self._clean_mobile_number(mobile)
+        
+        # Find user
+        try:
+            user = User.objects.get(phone_number=cleaned_mobile)
+        except User.DoesNotExist:
+            # Try various formats
+            users = User.objects.filter(
+                Q(phone_number=cleaned_mobile) |
+                Q(phone_number=f"+91{cleaned_mobile}") |
+                Q(phone_number=f"91{cleaned_mobile}") |
+                Q(phone_number__endswith=cleaned_mobile[-8:])
+            )
+            
+            if users.exists():
+                user = users.first()
+            else:
+                return Response(
+                    {'error': 'No account found with this mobile number'}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        
+        
+        # Send OTP via SMS
+        sms_mobile = f"+91{cleaned_mobile}"
+        result = sms_otp_provider.send_otp(sms_mobile)
+        
+        if not result.get("success"):
+            return Response(
+                {'error': result.get('error', 'Failed to send OTP')},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        return Response({
+            'success': True,
+            'message': 'OTP sent to your mobile',
+            'mobile': cleaned_mobile
+        })
+    
+    def _clean_mobile_number(self, mobile):
+        """Helper to clean mobile number"""
+        mobile = str(mobile).strip()
+        
+        if mobile.startswith('+'):
+            mobile = mobile[1:]
+        
+        if mobile.startswith('91') and len(mobile) == 12:
+            mobile = mobile[2:]
+        
+        mobile = ''.join(filter(str.isdigit, mobile))
+        if len(mobile) > 10:
+            mobile = mobile[-10:]
+        
+        return mobile
+
+
+
 class DynamicModelViewSet(viewsets.ModelViewSet):
     """
     Base ViewSet that automatically handles model permissions
@@ -678,6 +866,34 @@ class UserViewSet(DynamicModelViewSet):
     queryset = User.objects.all()
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated] 
+
+
+    def get_queryset(self):
+        user = self.request.user
+
+        if user.role == 'superadmin':
+            qs = User.objects.all()
+        elif user.role == 'admin':
+            qs = User.objects.exclude(role='superadmin')
+        elif user.role == 'master':
+            qs = User.objects.filter(role__in=['master', 'dealer', 'retailer'])
+        elif user.role == 'dealer':
+            qs = User.objects.filter(role='retailer', parent_user=user)
+        else:
+            qs = User.objects.filter(id=user.id)
+
+        search = self.request.query_params.get("search")
+        if search:
+            if "-" in search:
+                qs = qs.filter(role_uid__iexact=search)
+            else:
+                qs = qs.filter(
+                    Q(username__icontains=search) |
+                    Q(phone_number__icontains=search)
+                )
+                
+        return qs
+
 
 
     def get_serializer_class(self):
@@ -845,47 +1061,23 @@ class UserViewSet(DynamicModelViewSet):
         })
 
     def create(self, request, *args, **kwargs):
-        """Create user with role-based permissions"""
-        serializer = UserCreateSerializer(data=request.data, context={'request': request})
-        serializer.is_valid(raise_exception=True)
-        current_user = request.user
-
-
-        if current_user.role == 'retailer':
+        if request.user.role == 'retailer':
             return Response(
-                {'error': 'You do not have permission to create users'}, 
+                {'error': 'You do not have permission to create users'},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
-        serializer = UserCreateSerializer(data=request.data, context={'request': request})
-        serializer.is_valid(raise_exception=True)
-        
-        
-        serializer.validated_data['created_by'] = request.user
-        
-        self.perform_create(serializer)
-        headers = self.get_success_headers(serializer.data)
-        
-        return Response(
-            serializer.data, 
-            status=status.HTTP_201_CREATED, 
-            headers=headers
-        )
-    
 
-    def get_queryset(self):
-        user = self.request.user
-        
-        if user.role == 'superadmin':
-            return User.objects.all()
-        elif user.role == 'admin':
-            return User.objects.exclude(role='superadmin')
-        elif user.role == 'master':
-            return User.objects.filter(role__in=['master', 'dealer', 'retailer'])
-        elif user.role == 'dealer':
-            return User.objects.filter(role='retailer', created_by=user)
-        else:
-            return User.objects.filter(id=user.id)
+        serializer = UserCreateSerializer(
+            data=request.data,
+            context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+
+        return Response(
+            UserSerializer(user).data,
+            status=status.HTTP_201_CREATED
+        )
     
 
     def destroy(self, request, *args, **kwargs):
@@ -1059,6 +1251,51 @@ class UserViewSet(DynamicModelViewSet):
             },
             'bank_details': bank_data
         })
+    
+
+
+
+    @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
+    def toggle_passwordless_login(self, request):
+        """Enable/disable passwordless login"""
+        user = request.user
+        enable = request.data.get('enable', False)
+        
+        if not hasattr(user, 'allow_passwordless_login'):
+            from django.db import connection
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    ALTER TABLE users_user 
+                    ADD COLUMN IF NOT EXISTS allow_passwordless_login BOOLEAN DEFAULT FALSE
+                """)
+            user.refresh_from_db()
+        
+        user.allow_passwordless_login = enable
+        user.save()
+        
+        return Response({
+            'message': f'Passwordless login {"enabled" if enable else "disabled"}',
+            'allow_passwordless_login': user.allow_passwordless_login
+        })
+    
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
+    def login_preferences(self, request):
+        """Get user's login preferences"""
+        user = request.user
+        
+        return Response({
+            'allow_passwordless_login': getattr(user, 'allow_passwordless_login', False),
+            'has_password_set': user.has_usable_password(),
+            'has_mobile_verified': bool(user.phone_number),
+            'has_email_verified': bool(user.email),
+            'available_login_methods': [
+                'password_with_otp',
+                'passwordless_email',
+                'passwordless_mobile' if user.phone_number else None,
+                'mobile_otp'
+            ]
+        })
+    
 
 class WalletViewSet(DynamicModelViewSet):
     serializer_class = WalletSerializer
@@ -1132,7 +1369,7 @@ class WalletViewSet(DynamicModelViewSet):
             'email': email
         })
 
-    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
+    @action(detail=False, methods=['post'], permission_classes=[AllowAny])  # ✅ Important: AllowAny
     def verify_forget_pin_otp(self, request):
         """Step 2: Verify OTP for forget PIN - NO AUTH REQUIRED"""
         email = request.data.get('email')
@@ -1496,26 +1733,18 @@ class WalletViewSet(DynamicModelViewSet):
         amount = request.data.get("amount")
 
         if not amount:
-            return Response(
-                {"error": "Amount is required"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"error": "Amount is required"}, status=400)
 
         try:
             amount = Decimal(str(amount))
             if amount <= 0:
                 raise ValueError
         except Exception:
-            return Response(
-                {"error": "Invalid amount"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"error": "Invalid amount"}, status=400)
 
         wallet, _ = Wallet.objects.get_or_create(user=request.user)
 
-        opening_balance = wallet.balance
-        wallet.balance += amount
-        wallet.save()
+        wallet.add_amount(amount)
 
         Transaction.objects.create(
             wallet=wallet,
@@ -1526,8 +1755,7 @@ class WalletViewSet(DynamicModelViewSet):
             transaction_category="manual_topup",
             description="Manual top-up by SuperAdmin",
             created_by=request.user,
-            opening_balance=opening_balance,
-            closing_balance=wallet.balance
+            status="success"
         )
 
         return Response({
@@ -1535,6 +1763,7 @@ class WalletViewSet(DynamicModelViewSet):
             "message": "Balance added successfully",
             "balance": str(wallet.balance)
         })
+
 
 
 
@@ -1571,9 +1800,9 @@ class WalletViewSet(DynamicModelViewSet):
     
 
 
+    
     @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
     def direct_transfer(self, request):
-        """Direct wallet-to-wallet transfer (admin to user)"""
         serializer = DirectWalletTransferSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
@@ -1589,14 +1818,12 @@ class WalletViewSet(DynamicModelViewSet):
             target_user = User.objects.get(id=user_id)
             target_wallet = target_user.wallet
             
-            # Permission check - Admin can only transfer to their downline
             if not admin.can_transfer_to_user(target_user):
                 return Response(
                     {'error': 'You do not have permission to transfer money to this user'},
                     status=status.HTTP_403_FORBIDDEN
                 )
             
-            # Verify admin's PIN
             if not admin_wallet.verify_pin(pin):
                 return Response(
                     {'error': 'Invalid PIN'}, 
@@ -1604,26 +1831,21 @@ class WalletViewSet(DynamicModelViewSet):
                 )
             
             with db_transaction.atomic():
-                # For CREDIT: Add money to target user (from admin)
                 if transaction_type == 'credit':
-                    # Check admin has sufficient balance
                     if not admin_wallet.has_sufficient_balance(amount):
                         return Response(
                             {'error': 'Insufficient balance in your wallet'},
                             status=status.HTTP_400_BAD_REQUEST
                         )
                     
-                    # Deduct from admin
                     admin_opening = admin_wallet.balance
                     admin_wallet.deduct_amount(amount, pin=pin)
                     admin_closing = admin_wallet.balance
                     
-                    # Add to target user
                     target_opening = target_wallet.balance
                     target_wallet.add_amount(amount)
                     target_closing = target_wallet.balance
                     
-                    # Create admin transaction (debit)
                     Transaction.objects.create(
                         wallet=admin_wallet,
                         amount=amount,
@@ -1639,7 +1861,6 @@ class WalletViewSet(DynamicModelViewSet):
                         metadata={'notes': notes, 'transfer_type': 'credit_to_user', 'admin_id': admin.id}
                     )
                     
-                    # Create user transaction (credit)
                     Transaction.objects.create(
                         wallet=target_wallet,
                         amount=amount,
@@ -1657,29 +1878,21 @@ class WalletViewSet(DynamicModelViewSet):
                     
                     message = f"₹{amount} transferred to {target_user.username}"
                     
-                # For DEBIT: Deduct money from target user (to admin)
                 else:
-                    # Check target user has sufficient balance
                     if not target_wallet.has_sufficient_balance(amount):
                         return Response(
                             {'error': 'User has insufficient balance'},
                             status=status.HTTP_400_BAD_REQUEST
                         )
                     
-                    # Deduct from target user
                     target_opening = target_wallet.balance
-                    # Target user's PIN not required as admin is performing this
-                    target_wallet.balance -= amount
-                    target_wallet.save()
+                    target_wallet.system_deduct_amount(amount)
                     target_closing = target_wallet.balance
                     
-                    # Add to admin
                     admin_opening = admin_wallet.balance
-                    admin_wallet.balance += amount
-                    admin_wallet.save()
+                    admin_wallet.add_amount(amount)
                     admin_closing = admin_wallet.balance
                     
-                    # Create user transaction (debit)
                     Transaction.objects.create(
                         wallet=target_wallet,
                         amount=amount,
@@ -1695,7 +1908,6 @@ class WalletViewSet(DynamicModelViewSet):
                         metadata={'notes': notes, 'transfer_type': 'debit_by_admin', 'admin_id': admin.id}
                     )
                     
-                    # Create admin transaction (credit)
                     Transaction.objects.create(
                         wallet=admin_wallet,
                         amount=amount,
@@ -1737,7 +1949,6 @@ class WalletViewSet(DynamicModelViewSet):
                 {'error': f'Transfer failed: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        
 
 
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
@@ -1796,49 +2007,41 @@ class TransactionViewSet(DynamicModelViewSet):
         return queryset.none()
 
     def create(self, request, *args, **kwargs):
-        """Create a new transaction with PIN verification and service charges"""
-        serializer = TransactionCreateSerializer(data=request.data, context={'request': request})
+        serializer = TransactionCreateSerializer(
+            data=request.data,
+            context={'request': request}
+        )
         serializer.is_valid(raise_exception=True)
-        
+
         data = serializer.validated_data
         wallet = request.user.wallet
-        
+
         if data['transaction_type'] == 'debit':
             pin = data.get('pin')
             if not pin:
                 return Response({'error': 'PIN required for debit transactions'}, status=400)
-            
             if not wallet.verify_pin(pin):
                 return Response({'error': 'Invalid PIN'}, status=400)
-        
+
         pin = data.get('pin')
         amount = data['amount']
         service_charge = data['service_charge']
         service_submission_id = data.get('service_submission_id')
-        
+
         try:
             with db_transaction.atomic():
-                opening_balance = wallet.balance
 
                 if data['transaction_type'] == 'debit':
-                    total_deducted = wallet.deduct_amount(amount, service_charge, pin)
+                    wallet.deduct_amount(amount, service_charge, pin)
                 else:
-                    # For credit transactions, just add amount
                     wallet.add_amount(amount)
-                    total_deducted = 0
 
-
-                closing_balance = wallet.balance
-                
-                # Get service submission if provided
                 service_submission = None
                 if service_submission_id:
-                    try:
-                        service_submission = ServiceSubmission.objects.get(id=service_submission_id)
-                    except ServiceSubmission.DoesNotExist:
-                        pass
-                
-                # Create transaction record
+                    service_submission = ServiceSubmission.objects.filter(
+                        id=service_submission_id
+                    ).first()
+
                 transaction = Transaction.objects.create(
                     wallet=wallet,
                     amount=amount,
@@ -1851,101 +2054,77 @@ class TransactionViewSet(DynamicModelViewSet):
                     recipient_user=data.get('recipient_user'),
                     service_submission=service_submission,
                     service_name=data.get('service_name'),
-                    status='success',
-                    opening_balance=opening_balance,
-                    closing_balance=closing_balance
+                    status='success'
                 )
-                
-                # If there's a recipient for money transfer, add amount to their wallet
-                recipient_user = data.get('recipient_user')
-                if recipient_user and data['transaction_type'] == 'debit' and data.get('transaction_category') == 'money_transfer':
-                    recipient_wallet = recipient_user.wallet
 
-                    recipient_opening_balance = recipient_wallet.balance
-                
+                recipient_user = data.get('recipient_user')
+                if (
+                    recipient_user
+                    and data['transaction_type'] == 'debit'
+                    and data.get('transaction_category') == 'money_transfer'
+                ):
+                    recipient_wallet = recipient_user.wallet
                     recipient_wallet.add_amount(amount)
-                    
-                    recipient_closing_balance = recipient_wallet.balance
-                    
-                    # Create credit transaction for recipient
+
                     Transaction.objects.create(
                         wallet=recipient_wallet,
                         amount=amount,
                         net_amount=amount,
-                        service_charge=0.00,
+                        service_charge=Decimal("0.00"),
                         transaction_type='credit',
                         transaction_category='money_transfer',
                         description=f"Received from {request.user.username}",
                         created_by=request.user,
                         recipient_user=recipient_user,
                         status='success',
-                        opening_balance=recipient_opening_balance,
-                        closing_balance=recipient_closing_balance,
                         metadata={'sender_transaction_id': transaction.id}
                     )
-                
-                response_serializer = TransactionSerializer(transaction)
+
                 return Response({
                     'message': 'Transaction completed successfully',
-                    'data': response_serializer.data,
-                    'service_charge': service_charge,
-                    'total_deducted': total_deducted if data['transaction_type'] == 'debit' else 0,
+                    'data': TransactionSerializer(transaction).data,
                     'new_balance': wallet.balance
                 }, status=status.HTTP_201_CREATED)
-                
+
         except ValueError as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': str(e)}, status=400)
         except Exception as e:
-            return Response(
-                {'error': f'Transaction failed: {str(e)}'}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            return Response({'error': f'Transaction failed: {str(e)}'}, status=500)
+
 
     @action(detail=False, methods=['post'])
     def pay_for_service(self, request):
-        """Special endpoint to pay for services with PIN verification"""
         serializer = TransactionCreateSerializer(
-            data=request.data, 
+            data=request.data,
             context={'request': request}
         )
         serializer.is_valid(raise_exception=True)
-        
+
         data = serializer.validated_data
         wallet = request.user.wallet
         pin = data.get('pin')
         amount = data['amount']
         service_charge = data['service_charge']
         service_submission_id = data.get('service_submission_id')
-        
-        # Validate service submission
+
         if not service_submission_id:
             return Response(
-                {'error': 'service_submission_id is required for service payments'},
-                status=status.HTTP_400_BAD_REQUEST
+                {'error': 'service_submission_id is required'},
+                status=400
             )
-        
-        try:
-            service_submission = ServiceSubmission.objects.get(id=service_submission_id)
-        except ServiceSubmission.DoesNotExist:
-            return Response(
-                {'error': 'Service submission not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
+
+        service_submission = get_object_or_404(
+            ServiceSubmission, id=service_submission_id
+        )
+
+        if not wallet.verify_pin(pin):
+            return Response({'error': 'Invalid PIN'}, status=400)
+
         try:
             with db_transaction.atomic():
-                opening_balance = wallet.balance
-                total_deducted = wallet.deduct_amount(amount, service_charge, pin)
-                closing_balance = wallet.balance
-                if isinstance(amount, float):
-                    amount = Decimal(str(amount))
-                if isinstance(service_charge, float):
-                    service_charge = Decimal(str(service_charge))
-                
-                # Deduct amount including service charge
-                total_deducted = wallet.deduct_amount(amount, service_charge, pin)
-                
-                # Create transaction record
+
+                wallet.deduct_amount(amount, service_charge, pin)
+
                 transaction = Transaction.objects.create(
                     wallet=wallet,
                     amount=amount,
@@ -1953,41 +2132,29 @@ class TransactionViewSet(DynamicModelViewSet):
                     service_charge=service_charge,
                     transaction_type='debit',
                     transaction_category='service_payment',
-                    description=f"Payment for {service_submission.service_form.name if service_submission.service_form else 'Service'}",
+                    description=f"Payment for {service_submission.service_form.name}",
                     created_by=request.user,
                     service_submission=service_submission,
-                    service_name=service_submission.service_form.name if service_submission.service_form else 'Service Payment',
-                    status='success',
-                    opening_balance=opening_balance,
-                    closing_balance=closing_balance  
+                    service_name=service_submission.service_form.name,
+                    status='success'
                 )
-                
-                # Update service submission payment status
+
                 service_submission.payment_status = 'paid'
                 service_submission.transaction_id = transaction.reference_number
                 service_submission.save()
-                
-                response_serializer = TransactionSerializer(transaction)
+
                 return Response({
                     'message': 'Service payment completed successfully',
-                    'data': response_serializer.data,
-                    'service_charge': service_charge,
-                    'total_deducted': total_deducted,
-                    'new_balance': wallet.balance,
-                    'service_submission': {
-                        'id': service_submission.id,
-                        'submission_id': service_submission.submission_id,
-                        'payment_status': 'paid'
-                    }
-                }, status=status.HTTP_201_CREATED)
-                
-        except ValueError as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                    'data': TransactionSerializer(transaction).data,
+                    'new_balance': wallet.balance
+                }, status=201)
+
         except Exception as e:
             return Response(
-                {'error': f'Service payment failed: {str(e)}'}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {'error': f'Service payment failed: {str(e)}'},
+                status=500
             )
+
 
     @action(detail=False, methods=['get'])
     def filter_transactions(self, request):
@@ -2250,18 +2417,6 @@ class CityViewSet(viewsets.ReadOnlyModelViewSet):
 class FundRequestViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
-    filter_backends = [
-        DjangoFilterBackend,
-        filters.SearchFilter,
-        filters.OrderingFilter
-    ]
-
-    filterset_fields = ['status']
-    search_fields = ['reference_number', 'remarks', 'user__username']
-    ordering_fields = ['created_at', 'amount', 'updated_at']
-    ordering = ['-created_at']
-
-
 
     def get_permissions(self):
         """Custom permissions for fund requests"""
@@ -2271,6 +2426,10 @@ class FundRequestViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated()]
         return [IsAuthenticated()]
 
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['reference_number', 'remarks', 'user__username']
+    ordering_fields = ['created_at', 'amount', 'updated_at']
+    ordering = ['-created_at']
     
     def get_serializer_class(self):
         if self.action == 'create':
@@ -2293,38 +2452,35 @@ class FundRequestViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
 
+        # Superadmin → sabki history
         if user.role == "superadmin":
-            qs = FundRequest.objects.all()
+            return FundRequest.objects.all().select_related(
+                "user", "processed_by"
+            ).order_by("-created_at")
 
-        elif user.role == "admin":
-            qs = FundRequest.objects.exclude(user__role="superadmin")
+        # Admin → sab except superadmin
+        if user.role == "admin":
+            return FundRequest.objects.exclude(
+                user__role="superadmin"
+            ).select_related(
+                "user", "processed_by"
+            ).order_by("-created_at")
 
-        elif user.role in ["master", "dealer"]:
-            downline_users = User.objects.filter(created_by=user)
-            qs = FundRequest.objects.filter(
+        # Master / Dealer → apni + downline ki
+        if user.role in ["master", "dealer"]:
+            downline_users = User.objects.filter(parent_user=user)
+            return FundRequest.objects.filter(
                 Q(user=user) | Q(user__in=downline_users)
-            )
+            ).select_related(
+                "user", "processed_by"
+            ).order_by("-created_at")
 
-        else:
-            qs = FundRequest.objects.filter(user=user)
-
-        from_date = self.request.query_params.get("from_date")
-        to_date = self.request.query_params.get("to_date")
-
-        if from_date:
-            qs = qs.filter(txn_date__gte=from_date)
-
-        if to_date:
-            end_date = make_aware(
-                datetime.combine(
-                    datetime.strptime(to_date, "%Y-%m-%d"),
-                    time.max
-                )
-            )
-            qs = qs.filter(txn_date__lte=end_date)
-
-        return qs.select_related("user", "processed_by").order_by("-created_at")
-
+        # Retailer → sirf apni
+        return FundRequest.objects.filter(
+            user=user
+        ).select_related(
+            "user", "processed_by"
+        ).order_by("-created_at")
 
     
     def perform_create(self, serializer):
@@ -2448,8 +2604,6 @@ class FundRequestViewSet(viewsets.ModelViewSet):
         
         return Response(stats)
     
-
-    
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
     def bank_list(self, request):
         """Get list of available banks"""
@@ -2459,35 +2613,13 @@ class FundRequestViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
     def bank_options(self, request):
-        """
-        FUND REQUEST BANK DROPDOWN RULES:
-
-        deposit_banks:
-            - sirf ADMIN + SUPERADMIN ke banks
-
-        your_banks:
-            - logged-in user ke banks hi
-            - retailer / dealer / master / admin sab ke liye apna-apna
-        """
-        user = request.user
-
-        # ✅ Deposit banks → Admin + Superadmin
-        deposit_banks = UserBank.objects.filter(
-            user__role__in=["admin", "superadmin"],
-            is_active=True
-        ).select_related("user")
-
-        # ✅ Your banks → Sirf current user ke
-        your_banks = UserBank.objects.filter(
-            user=user,
-            is_active=True
-        )
-
+        """Get bank options for dropdown"""
+        banks = FundRequest.BANKS
         return Response({
-            "deposit_banks": UserBankSerializer(deposit_banks, many=True).data,
-            "your_banks": UserBankSerializer(your_banks, many=True).data
+            'deposit_banks': [{'value': bank[0], 'label': bank[1]} for bank in banks],
+            'your_banks': [{'value': bank[0], 'label': bank[1]} for bank in banks]
         })
-
+    
 
 
 class UserHierarchyViewSet(viewsets.ViewSet):
@@ -2495,54 +2627,53 @@ class UserHierarchyViewSet(viewsets.ViewSet):
     
     @action(detail=False, methods=['get'])
     def my_hierarchy(self, request):
-        """Get current user's hierarchy - who created them and who they created"""
-        user = request.user
-        
-        creator = user.created_by
-        
-        created_users = User.objects.filter(created_by=user).select_related('wallet')
-        
-        hierarchy_stats = {
-            'total_downline': created_users.count(),
-            'downline_by_role': created_users.values('role').annotate(count=Count('id')),
-            'total_commission_earned': CommissionTransaction.objects.filter(
-                user=user, status='success', transaction_type='credit'
-            ).aggregate(total=Sum('commission_amount'))['total'] or 0
-        }
-        
-        creator_data = None
-        if creator:
-            creator_data = {
-                'id': creator.id,
-                'username': creator.username,
-                'role': creator.role,
-                'phone_number': creator.phone_number,
-                'created_at': creator.date_joined
-            }
-        
-        created_users_data = []
-        for created_user in created_users:
-            user_data = {
-                'id': created_user.id,
-                'username': created_user.username,
-                'role': created_user.role,
-                'phone_number': created_user.phone_number,
-                'created_at': created_user.date_joined,
-                'wallet_balance': created_user.wallet.balance if hasattr(created_user, 'wallet') else 0,
-                'services_count': created_user.user_services.count()
-            }
-            created_users_data.append(user_data)
-        
+        """
+        Show ALL downline users:
+        - created by me
+        - OR created by someone under me
+        """
+        current_user = request.user
+
+        # 🔥 SUPERADMIN → sab dikhe (except self)
+        if current_user.role == "superadmin":
+            queryset = User.objects.exclude(id=current_user.id)
+
+        else:
+            # 🔥 Sab users except self
+            all_users = User.objects.exclude(id=current_user.id)
+
+            # 🔥 Downline filter (recursive parent_user chain)
+            queryset = [
+                u for u in all_users
+                if u.is_in_downline_of(current_user)
+            ]
+
+        users_data = []
+        for u in queryset:
+            users_data.append({
+                "id": u.id,
+                "public_id": u.role_uid,
+                "username": u.username,
+                "role": u.role,
+                "phone_number": u.phone_number,
+                "wallet_balance": u.wallet.balance if hasattr(u, "wallet") else "0.00",
+                "created_at": u.date_joined,
+
+                # 🔥 hierarchy clarity
+                "parent_user": u.parent_user.username if u.parent_user else None,
+                "parent_role": u.parent_user.role if u.parent_user else None,
+                "created_by": u.created_by.username if u.created_by else None,
+            })
+
         return Response({
-            'current_user': {
-                'id': user.id,
-                'username': user.username,
-                'role': user.role,
-                'created_at': user.date_joined
+            "current_user": {
+                "id": current_user.id,
+                "public_id": current_user.role_uid,
+                "username": current_user.username,
+                "role": current_user.role,
             },
-            'creator': creator_data,
-            'created_users': created_users_data,
-            'hierarchy_stats': hierarchy_stats
+            "total_users": len(users_data),
+            "created_users": users_data
         })
     
     @action(detail=False, methods=['get'])
@@ -2556,7 +2687,7 @@ class UserHierarchyViewSet(viewsets.ViewSet):
         
         def get_user_hierarchy(user, depth=0):
             """Recursively get user hierarchy"""
-            created_users = User.objects.filter(created_by=user)
+            created_users = User.objects.filter(parent_user=user)
             
             user_data = {
                 'id': user.id,
@@ -2597,11 +2728,12 @@ class UserHierarchyViewSet(viewsets.ViewSet):
 
         def get_downline_recursive(parent):
             users = []
-            children = User.objects.filter(created_by=parent)
+            children = User.objects.filter(parent_user=parent)
 
             for child in children:
                 users.append({
                     "id": child.id,
+                    "public_id": child.role_uid,
                     "username": child.username,
                     "role": child.role,
                 })
@@ -2614,6 +2746,7 @@ class UserHierarchyViewSet(viewsets.ViewSet):
             data = [
                 {
                     "id": u.id,
+                    "public_id": u.role_uid,
                     "username": u.username,
                     "role": u.role
                 }
@@ -2627,276 +2760,79 @@ class UserHierarchyViewSet(viewsets.ViewSet):
             "users": users,
             "count": len(users)
         })
-
-
-
-class RefundViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
-    serializer_class = RefundRequestSerializer
-    
-    def get_queryset(self):
-        return RefundRequest.objects.filter(user=self.request.user)
-    
-    def get_serializer_class(self):
-        if self.action == 'create':
-            return RefundRequestCreateSerializer
-        return RefundRequestSerializer
-    
-    @action(detail=False, methods=['post'])
-    def request_refund(self, request):
-        """Retailer raises refund request"""
-        serializer = RefundRequestCreateSerializer(
-            data=request.data, 
-            context={'request': request}
-        )
-        serializer.is_valid(raise_exception=True)
-        
-        transaction_id = serializer.validated_data['transaction_id']
-        
-        try:
-            transaction = Transaction.objects.get(
-                id=transaction_id,
-                wallet__user=request.user
-            )
-            
-            is_eligible, message = transaction.is_refund_eligible()
-            if not is_eligible:
-                return Response(
-                    {'error': message}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            refund = RefundRequest.objects.create(
-                user=request.user,
-                transaction=transaction,
-                amount=transaction.amount,
-                refund_type=serializer.validated_data['refund_type'],
-                reason=serializer.validated_data['reason'],
-                screenshot=serializer.validated_data.get('screenshot')
-            )
-            
-            transaction.refund_status = 'requested'
-            transaction.save()
-            
-            return Response({
-                'message': 'Refund request submitted successfully',
-                'refund_id': refund.refund_id,
-                'data': RefundRequestSerializer(refund).data
-            })
-            
-        except Transaction.DoesNotExist:
-            return Response(
-                {'error': 'Transaction not found'}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
-    
-    @action(detail=False, methods=['get'])
-    def eligible_transactions(self, request):
-        """Get transactions eligible for refund"""
-        transactions = Transaction.objects.filter(
-            wallet__user=request.user,
-            transaction_type='debit',
-            status__in=['failed', 'pending'],
-            refund_status='none'
-        ).exclude(
-            created_at__lt=timezone.now() - timedelta(days=7)
-        ).exclude(
-            created_at__gt=timezone.now() - timedelta(minutes=5)
-        )
-        
-        serializer = TransactionSerializer(transactions, many=True)
-        return Response(serializer.data)
     
 
 
-class AdminRefundViewSet(viewsets.ViewSet):
-    permission_classes = [IsAdminUser]
-    
-    def list(self, request):
-        """Get all refund requests (with filters)"""
-        status_filter = request.query_params.get('status', None)
-        user_id = request.query_params.get('user_id', None)
-        
+    @action(detail=False, methods=["get"])
+    def parent_chain(self, request):
+        target_role = request.query_params.get("role")
         user = request.user
+
+        admin_id = request.query_params.get("admin_id")
+        master_id = request.query_params.get("master_id")
+
         if user.role == "superadmin":
-            queryset = RefundRequest.objects.all()
 
-        elif user.role == "admin":
-            downline_users = User.objects.filter(created_by=user)
-            queryset = RefundRequest.objects.filter(
-                Q(user=user) | Q(user__in=downline_users)
-            )
-
-        elif user.role in ["master", "dealer"]:
-            downline_users = User.objects.filter(created_by=user)
-            queryset = RefundRequest.objects.filter(user__in=downline_users)
-
-        else:
-            queryset = RefundRequest.objects.none()
-
-        if status_filter:
-            queryset = queryset.filter(status=status_filter)
-        if user_id:
-            queryset = queryset.filter(user_id=user_id)
-        
-        serializer = RefundRequestSerializer(queryset, many=True)
-        return Response(serializer.data)
-    
-    @action(detail=False, methods=['get'])
-    def pending_refunds(self, request):
-        """Get all pending refunds"""
-        user = request.user
-        if user.role == "superadmin":
-            refunds = RefundRequest.objects.filter(status="pending")
-
-        elif user.role == "admin":
-            downline_users = User.objects.filter(created_by=user)
-            refunds = RefundRequest.objects.filter(
-                status="pending",
-                user__in=downline_users
-            )
-
-        elif user.role in ["master", "dealer"]:
-            downline_users = User.objects.filter(created_by=user)
-            refunds = RefundRequest.objects.filter(
-                status="pending",
-                user__in=downline_users
-            )
-
-        else:
-            refunds = RefundRequest.objects.none()
-
-
-        serializer = RefundRequestSerializer(refunds, many=True)
-        return Response(serializer.data)
-    
-    @action(detail=True, methods=['post'])
-    def process_refund(self, request, pk=None):
-        """Process refund request"""
-        try:
-            refund = RefundRequest.objects.get(id=pk)
-            user = request.user
-            if user.role != "superadmin":
-                allowed_users = User.objects.filter(created_by=user)
-
-                if refund.user != user and refund.user not in allowed_users:
-                    return Response(
-                        {"error": "You are not allowed to process this refund"},
-                        status=status.HTTP_403_FORBIDDEN
-                    )
-
-
-        except RefundRequest.DoesNotExist:
-            return Response(
-                {'error': 'Refund request not found'}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        serializer = RefundActionSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        if refund.status != "pending":
-            return Response(
-                {"error": "This refund is already processed"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        
-        action = serializer.validated_data['action']
-        admin_notes = serializer.validated_data.get('admin_notes', '')
-        
-        try:
-            with db_transaction.atomic():
-                if action == 'approve':
-                    self.process_wallet_refund(refund, request.user)
-                    refund.status = 'approved'
-                    
-                elif action == 'reject':
-                    refund.status = 'rejected'
-                    
-                elif action == 'process':
-                    refund.status = 'processed'
-                
-                refund.processed_by = request.user
-                refund.processed_at = timezone.now()
-                refund.admin_notes = admin_notes
-                refund.save()
-                
-                refund.transaction.refund_status = refund.status
-                refund.transaction.refund_reference = refund.refund_id
-                refund.transaction.save()
-                
-                self.send_refund_notification(refund)
-                
+            if target_role in ["master", "dealer", "retailer"] and not admin_id:
+                admins = User.objects.filter(role="admin")
                 return Response({
-                    'message': f'Refund {action}ed successfully',
-                    'data': RefundRequestSerializer(refund).data
+                    "role": "admin",
+                    "users": [
+                        {"id": a.id, "public_id": a.role_uid, "username": a.username}
+                        for a in admins
+                    ]
                 })
-                
-        except Exception as e:
-            return Response(
-                {'error': f'Failed to process refund: {str(e)}'}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-    
-    def process_wallet_refund(self, refund, admin_user):
-        """Add refund amount back to wallet"""
-        wallet = refund.user.wallet
-        opening_balance = wallet.balance
-        
-        wallet.add_amount(refund.amount)
-        
-        Transaction.objects.create(
-            wallet=wallet,
-            amount=refund.amount,
-            net_amount=refund.amount,
-            service_charge=Decimal('0.00'),
-            transaction_type='credit',
-            transaction_category='refund',
-            status='success',
-            description=f'Refund for transaction {refund.transaction.reference_number}',
-            created_by=admin_user,
-            opening_balance=opening_balance,
-            closing_balance=wallet.balance,
-            metadata={
-                'refund_id': refund.refund_id,
-                'original_transaction_id': refund.transaction.id,
-                'reason': refund.reason
-            }
-        )
-    
-    def send_refund_notification(self, refund):
-        """Send notification to user about refund status"""
-        pass
-    
-    @action(detail=False, methods=['get'])
-    def stats(self, request):
 
-        user = request.user
-        if user.role == "superadmin":
-            queryset = RefundRequest.objects.all()
+            if target_role in ["dealer", "retailer"] and admin_id and not master_id:
+                masters = User.objects.filter(role="master", parent_user_id=admin_id)
+                return Response({
+                    "role": "master",
+                    "users": [
+                        {"id": m.id, "public_id": m.role_uid, "username": m.username}
+                        for m in masters
+                    ]
+                })
 
-        elif user.role == "admin":
-            downline_users = User.objects.filter(created_by=user)
-            queryset = RefundRequest.objects.filter(
-                Q(user=user) | Q(user__in=downline_users)
-            )
+            if target_role == "retailer" and master_id:
+                dealers = User.objects.filter(role="dealer", parent_user_id=master_id)
+                return Response({
+                    "role": "dealer",
+                    "users": [
+                        {"id": d.id, "public_id": d.role_uid, "username": d.username}
+                        for d in dealers
+                    ]
+                })
 
-        elif user.role in ["master", "dealer"]:
-            downline_users = User.objects.filter(created_by=user)
-            queryset = RefundRequest.objects.filter(user__in=downline_users)
+        if user.role == "admin":
 
-        else:
-            queryset = RefundRequest.objects.none()
+            if target_role in ["dealer", "retailer"] and not master_id:
+                masters = User.objects.filter(role="master", parent_user=user)
+                return Response({
+                    "role": "master",
+                    "users": [
+                        {"id": m.id, "public_id": m.role_uid, "username": m.username}
+                        for m in masters
+                    ]
+                })
 
-        stats = {
-            'total_refunds': queryset.count(),
-            'pending_refunds': queryset.filter(status='pending').count(),
-            'approved_refunds': queryset.filter(status='approved').count(),
-            'rejected_refunds': queryset.filter(status='rejected').count(),
-            'processed_refunds': queryset.filter(status='processed').count(),
-            'total_refund_amount': queryset.filter(
-                status__in=['approved', 'processed']
-            ).aggregate(total=Sum('amount'))['total'] or 0,
-        }
+            if target_role == "retailer" and master_id:
+                dealers = User.objects.filter(role="dealer", parent_user_id=master_id)
+                return Response({
+                    "role": "dealer",
+                    "users": [
+                        {"id": d.id, "public_id": d.role_uid, "username": d.username}
+                        for d in dealers
+                    ]
+                })
 
-        return Response(stats)
+        if user.role == "master" and target_role == "retailer":
+            dealers = User.objects.filter(role="dealer", parent_user=user)
+            return Response({
+                "role": "dealer",
+                "users": [
+                    {"id": d.id, "public_id": d.role_uid, "username": d.username}
+                    for d in dealers
+                ]
+            })
+
+        return Response({"users": []})

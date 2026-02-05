@@ -5,7 +5,7 @@ from services.views import (ServiceCategoryViewSet, DirectServiceFormViewSet, Se
     ServiceFormViewSet, ServiceSubmissionViewSet, ServiceImageViewSet)
 from users.views import (PermissionViewSet, AuthViewSet, UserViewSet, WalletViewSet, UserBankViewSet,
         TransactionViewSet, UserHierarchyViewSet, OnBoardServiceViewSet, FundRequestViewSet, ServiceChargeViewSet,
-        StateViewSet, CityViewSet, RefundViewSet, AdminRefundViewSet)
+        StateViewSet, CityViewSet)
 from commission.views import (CommissionPlanViewSet, ServiceCommissionViewSet, CommissionTransactionViewSet,
         UserCommissionPlanViewSet, CommissionPayoutViewSet, CommissionStatsViewSet, DealerRetailerCommissionViewSet, 
         CommissionDashboardViewSet, OperatorCommissionViewSet)
@@ -13,6 +13,7 @@ from services.views_permissions import ServicePermissionViewSet
 from vendorpayment.views import VendorPaymentViewSet
 from vendorpayment.views_vendor import VendorManagerViewSet
 from aeps.views import AEPSMerchantViewSet
+
 
 router = DefaultRouter()
 
@@ -29,8 +30,6 @@ router.register(r'singup-request', SignUPRequestViewSet)
 router.register(r'onboardservices', OnBoardServiceViewSet, basename='services')
 router.register(r'permissions', PermissionViewSet, basename='permissions')
 router.register(r'service-permissions', ServicePermissionViewSet, basename='service-permissions')
-router.register(r'refunds', RefundViewSet, basename='refunds')
-router.register(r'admin/refunds', AdminRefundViewSet, basename='admin-refunds')
 
 
 # Wallet and Transaction
@@ -70,5 +69,3 @@ router.register(r'vendor-manager', VendorManagerViewSet, basename='vendor-manage
 
 # aeps
 router.register(r'merchants', AEPSMerchantViewSet, basename='aeps-merchant')
-
-

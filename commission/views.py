@@ -85,12 +85,8 @@ class ServiceCommissionViewSet(viewsets.ModelViewSet):
                 pass
             elif user_role == 'admin':
                 # Admin sees Admin, Master, Dealer, Retailer
-                queryset = queryset.filter(
-                    Q(admin_commission__gt=0) |
-                    Q(master_commission__gt=0) |
-                    Q(dealer_commission__gt=0) |
-                    Q(retailer_commission__gt=0)
-                )
+                queryset = queryset.filter(is_active=True)
+
             elif user_role == 'master':
                 # Master sees Master, Dealer, Retailer
                 queryset = queryset.filter(
@@ -141,18 +137,17 @@ class ServiceCommissionViewSet(viewsets.ModelViewSet):
         """Check if user has permission to edit specific commission fields"""
         user_role = user.role
         
-        # Define editable fields for each role
         editable_fields_map = {
             'superadmin': ['admin_commission'],
-            'admin': ['master_commission'],
-            'master': ['dealer_commission'],
+            'admin': ['master_commission', 'dealer_commission', 'retailer_commission'],
+            'master': ['dealer_commission', 'retailer_commission'],
             'dealer': ['retailer_commission'],
             'retailer': []
         }
+
         
         editable_fields = editable_fields_map.get(user_role, [])
         
-        # Check each field in data
         for field in data.keys():
             if field.endswith('_commission') and field != 'superadmin_commission':
                 if field not in editable_fields:
@@ -312,7 +307,10 @@ class ServiceCommissionViewSet(viewsets.ModelViewSet):
                             commission_data['admin_commission'] = 0
                             commission_data['master_commission'] = 0
                             commission_data['dealer_commission'] = 0
-                    
+
+                    if not existing_commission and user.role == 'superadmin':
+                        commission_data['max_commission_value'] = commission_data.get('commission_value')
+
                     commission_serializer.save(created_by=user)
                     created_count += 1
                 else:
@@ -1172,17 +1170,9 @@ class OperatorCommissionViewSet(viewsets.ModelViewSet):
         if service_subcategory_id:
             queryset = queryset.filter(service_subcategory_id=service_subcategory_id)
 
-        operator_type = self.request.query_params.get('operator_type')
-        if operator_type:
-            queryset = queryset.filter(operator_type=operator_type)
-
         operator_id = self.request.query_params.get('operator_id')
         if operator_id:
             queryset = queryset.filter(operator_id=operator_id)
-
-        circle = self.request.query_params.get('circle')
-        if circle:
-            queryset = queryset.filter(operator_circle=circle)
 
         commission_plan = self.request.query_params.get('commission_plan')
         if commission_plan:
@@ -1192,20 +1182,42 @@ class OperatorCommissionViewSet(viewsets.ModelViewSet):
         if is_active is not None:
             queryset = queryset.filter(is_active=is_active.lower() == 'true')
 
+        mode = self.request.query_params.get('mode')
+        if mode == 'list':
+            queryset = queryset.filter(admin_commission__gt=0)
+
         return queryset
 
 
     
     def perform_create(self, serializer):
+        user = self.request.user
         operator = serializer.validated_data.get('operator')
-        service_subcategory = serializer.validated_data.get('service_subcategory')
+        commission_value = serializer.validated_data.get('commission_value')
 
         serializer.save(
             operator_name=operator.operator_name,
             operator_type=operator.operator_type,
-            service_subcategory=service_subcategory,
-            created_by=self.request.user
+            created_by=user,
+            max_commission_value=commission_value
         )
+
+
+
+    def perform_update(self, serializer):
+        user = self.request.user
+        instance = self.get_object()
+
+        if user.role == 'superadmin' and 'commission_value' in serializer.validated_data:
+            new_value = serializer.validated_data['commission_value']
+            serializer.save(
+                max_commission_value=new_value
+            )
+        else:
+            serializer.save()
+
+
+
 
     
     @action(detail=False, methods=['get'])
@@ -1312,21 +1324,30 @@ class OperatorCommissionViewSet(viewsets.ModelViewSet):
                 ).first()
                 
                 if existing_commission:
-                    # Update existing commission
                     commission_serializer = OperatorCommissionSerializer(
-                        existing_commission, 
+                        existing_commission,
                         data=commission_data,
-                        partial=True
+                        partial=True,
+                        context={"request": request}
                     )
+
                 else:
-                    # Create new commission
                     commission_serializer = OperatorCommissionSerializer(
-                        data=commission_data
+                        data=commission_data,
+                        context={"request": request}
                     )
-                
+
                 if commission_serializer.is_valid():
-                    commission_serializer.save(created_by=user)
+                    if not existing_commission and user.role == 'superadmin':
+                        commission_serializer.save(
+                            created_by=user,
+                            max_commission_value=commission_serializer.validated_data.get('commission_value')
+                        )
+                    else:
+                        commission_serializer.save(created_by=user)
+
                     created_count += 1
+
                 else:
                     errors.append(f"Validation error for operator {operator_id}: {commission_serializer.errors}")
                     
