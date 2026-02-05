@@ -72,6 +72,7 @@ class BillFetchRequestSerializer(serializers.Serializer):
     mobile_no = serializers.CharField(max_length=15, required=True)
     utility_acc_no = serializers.CharField(max_length=50, required=False, allow_null=True)
     sender_name = serializers.CharField(max_length=255, default="Customer")
+    dob7 = serializers.CharField(required=False, allow_null=True)
 
 class EKOOperatorResponseSerializer(serializers.Serializer):
     operator_id = serializers.CharField()

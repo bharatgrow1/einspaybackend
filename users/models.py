@@ -14,6 +14,12 @@ from decimal import Decimal
 from django.db.models.signals import post_save, pre_save  
 from django.dispatch import receiver
 
+import random
+
+def generate_5_digit():
+    return f"{random.randint(0, 99999):05d}"
+
+
 
 class MobileOTP(models.Model):
     mobile = models.CharField(max_length=15, unique=True)
@@ -63,6 +69,20 @@ class User(AbstractUser):
         ('retailer', 'Retailer'),
     )
 
+    ROLE_PREFIX = {
+        'superadmin': 'spw',
+        'admin': 'adw',
+        'master': 'maw',
+        'dealer': 'dew',
+        'retailer': 'rtw',
+    }
+
+
+    @property
+    def role_based_id(self):
+        prefix = self.ROLE_PREFIX.get(self.role, 'uid')
+        return f"{prefix}{self.id}"
+
     GENDER_CHOICES = (
         ('male', 'Male'),
         ('female', 'Female'),
@@ -87,9 +107,12 @@ class User(AbstractUser):
         ('franchise', 'Franchise'),
         ('other', 'Other'),
     )
+
+    role_uid = models.CharField(max_length=20, unique=True, blank=True, null=True, db_index=True)
     email = models.EmailField(unique=True,null=True,blank=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='retailer')
-    created_by = models.ForeignKey('self',on_delete=models.SET_NULL,null=True,blank=True,related_name='created_users')
+    created_by = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True,related_name='created_users')
+    parent_user = models.ForeignKey( 'self',on_delete=models.SET_NULL, null=True, blank=True, related_name='child_users')
     profile_picture = models.CharField(max_length=500, null=True, blank=True)
     first_name = models.CharField(max_length=30, blank=True, null=True)
     last_name = models.CharField(max_length=30, blank=True, null=True)
@@ -106,7 +129,7 @@ class User(AbstractUser):
     business_registration_number = models.CharField(max_length=50, blank=True, null=True)
     gst_number = models.CharField(max_length=15, blank=True, null=True)
     business_ownership_type = models.CharField(max_length=20, choices=BUSINESS_OWNERSHIP_CHOICES, blank=True, null=True)
-    
+    allow_passwordless_login = models.BooleanField(default=True)
     address = models.TextField(blank=True, null=True)
     city = models.CharField(max_length=100, blank=True, null=True)
     state = models.CharField(max_length=100, blank=True, null=True)
@@ -219,20 +242,39 @@ class User(AbstractUser):
 
 
     def can_transfer_to_user(self, target_user):
-        """Check if user can directly transfer money to target user"""
         if self.role == 'superadmin':
             return True
-        
+
         if self.role == 'admin':
             return target_user.role in ['admin', 'master', 'dealer', 'retailer']
-        
+
         if self.role == 'master':
-            return target_user.created_by == self and target_user.role in ['dealer', 'retailer']
-        
+            return (
+                target_user.role in ['dealer', 'retailer']
+                and target_user.is_in_downline_of(self)
+            )
+
         if self.role == 'dealer':
-            return target_user.created_by == self and target_user.role == 'retailer'
-        
+            return (
+                target_user.role == 'retailer'
+                and target_user.is_in_downline_of(self)
+            )
+
         return False
+
+
+
+    def is_in_downline_of(self, parent):
+        """
+        Check whether this user is in downline of given parent user
+        """
+        current = self.parent_user
+        while current:
+            if current == parent:
+                return True
+            current = current.parent_user
+        return False
+
     
 
 class UserBank(models.Model):
@@ -434,6 +476,15 @@ class Wallet(models.Model):
         total_amount = amount + service_charge
         return self.balance >= total_amount
 
+    def add_amount(self, amount):
+        """Add amount to wallet"""
+        if isinstance(amount, float):
+            amount = Decimal(str(amount))
+        elif isinstance(amount, int):
+            amount = Decimal(amount)
+        self.balance += amount
+        self.save()
+
     def deduct_amount(self, amount, service_charge=0, pin=None):
         """Deduct amount from wallet with PIN verification"""
         if self.is_pin_set and not pin:
@@ -442,11 +493,15 @@ class Wallet(models.Model):
         if self.is_pin_set and not self.verify_pin(pin):
             raise ValueError("Invalid PIN")
         
-        # Convert both to Decimal to ensure type consistency
         if isinstance(amount, float):
             amount = Decimal(str(amount))
+        elif isinstance(amount, int):
+            amount = Decimal(amount)
+        
         if isinstance(service_charge, float):
             service_charge = Decimal(str(service_charge))
+        elif isinstance(service_charge, int):
+            service_charge = Decimal(service_charge)
         
         total_amount = amount + service_charge
         
@@ -456,13 +511,6 @@ class Wallet(models.Model):
         self.balance -= total_amount
         self.save()
         return total_amount
-
-    def add_amount(self, amount):
-        """Add amount to wallet"""
-        if isinstance(amount, float):
-            amount = Decimal(str(amount))
-        self.balance += amount
-        self.save()
 
 
     def deduct_fee_without_pin(self, fee_amount):
@@ -482,8 +530,26 @@ class Wallet(models.Model):
         self.balance -= fee_amount
         self.save()
         return fee_amount
+    
 
+    def system_deduct_amount(self, amount):
+        """
+        Deduct amount WITHOUT PIN
+        Only for admin/system initiated transactions
+        """
+        if isinstance(amount, float):
+            amount = Decimal(str(amount))
+        elif isinstance(amount, int):
+            amount = Decimal(amount)
 
+        if amount <= 0:
+            raise ValueError("Invalid amount")
+
+        if self.balance < amount:
+            raise ValueError("Insufficient balance")
+
+        self.balance -= amount
+        self.save()
 
 
 class PinHistory(models.Model):
@@ -588,20 +654,9 @@ class Transaction(models.Model):
         ('success', 'Success'),
         ('failed', 'Failed'),
         ('pending', 'Pending'),
-        ('processing', 'Processing'),
         ('cancelled', 'Cancelled'),
     )
-
-
-    REFUND_STATUS_CHOICES = (
-        ('none', 'No Refund'),
-        ('requested', 'Refund Requested'),
-        ('approved', 'Refund Approved'),
-        ('processed', 'Refund Processed'),
-    )
-
-    refund_status = models.CharField(max_length=20, choices=REFUND_STATUS_CHOICES, default='none')
-    refund_reference = models.CharField(max_length=100, blank=True, null=True)
+    
     wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name='transactions')
     amount = models.DecimalField(max_digits=15, decimal_places=2)
     net_amount = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
@@ -611,8 +666,6 @@ class Transaction(models.Model):
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='success')
     description = models.CharField(max_length=255)
     reference_number = models.CharField(max_length=100, unique=True, blank=True)
-    eko_tid = models.CharField(max_length=100, blank=True, null=True)
-    eko_client_ref_id = models.CharField(max_length=100, blank=True, null=True)
     recipient_user = models.ForeignKey(
         settings.AUTH_USER_MODEL, 
         on_delete=models.SET_NULL, 
@@ -626,9 +679,9 @@ class Transaction(models.Model):
     closing_balance = models.DecimalField(
         max_digits=50, decimal_places=2, null=True, blank=True
     )
-
+    # Service-related fields (for service payments)
     service_submission = models.ForeignKey(
-        'services.ServiceSubmission',
+        'services.ServiceSubmission',  # Your service app model
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -639,6 +692,7 @@ class Transaction(models.Model):
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='created_transactions')
     created_at = models.DateTimeField(auto_now_add=True)
     
+    # Additional fields for filtering
     metadata = models.JSONField(default=dict, blank=True)
 
     class Meta:
@@ -648,7 +702,7 @@ class Transaction(models.Model):
             models.Index(fields=['transaction_type', 'status']),
             models.Index(fields=['transaction_category', 'created_at']),
             models.Index(fields=['reference_number']),
-            models.Index(fields=['service_submission']),
+            models.Index(fields=['service_submission']),  # New index
         ]
 
     def __str__(self):
@@ -666,26 +720,6 @@ class Transaction(models.Model):
         timestamp = timezone.now().strftime('%Y%m%d%H%M%S')
         random_str = str(random.randint(1000, 9999))
         return f"TXN{timestamp}{random_str}"
-    
-
-    def is_refund_eligible(self):
-        if self.transaction_type != 'debit':
-            return False, "Not a debit transaction"
-
-        if self.status != 'success':
-            return False, "Amount was not deducted"
-
-        if self.refund_status != 'none':
-            return False, "Refund already processed"
-
-        if RefundRequest.objects.filter(transaction=self).exists():
-            return False, "Refund already requested"
-
-        if timezone.now() - self.created_at > timedelta(days=7):
-            return False, "Refund window expired"
-
-        return True, "Transaction is eligible for refund"
-
 
 
 
@@ -759,7 +793,6 @@ class FundRequest(models.Model):
         ('processing', 'Processing'),
     )
     
-    # Request details
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -771,19 +804,17 @@ class FundRequest(models.Model):
     deposit_bank = models.CharField(max_length=300)
     Your_Bank = models.CharField(max_length=255)
     account_number = models.CharField(max_length=50, blank=True, null=True)
-    reference_number = models.CharField(max_length=100, unique=True)
     utr_number = models.CharField(max_length=100,blank=True,null=True,help_text="UTR / Bank Reference Number provided by user")
+    reference_number = models.CharField(max_length=100, unique=True)
     service_charge = models.DecimalField(max_digits=15,decimal_places=2,default=0.00)
     wallet_credit = models.DecimalField(max_digits=15,decimal_places=2,default=0.00)
     remarks = models.TextField(blank=True, null=True)
     screenshot = models.FileField(upload_to='fund_requests/screenshots/', blank=True, null=True)
     
-    # Status and tracking
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
-    # Approval information
     processed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -829,17 +860,17 @@ class FundRequest(models.Model):
 
     
     def approve(self, approved_by, notes=""):
-        """Approve the fund request and add balance to user's wallet"""
+
         if self.status != 'pending':
             return False, "Request already processed"
-        
+
         try:
             with db_transaction.atomic():
 
                 charge = (self.amount * Decimal("0.0001")).quantize(Decimal("0.01"))
                 if charge < Decimal("0.01"):
                     charge = Decimal("0.01")
-                    
+
                 net_amount = self.amount - charge
 
                 self.status = 'approved'
@@ -849,17 +880,15 @@ class FundRequest(models.Model):
                 self.service_charge = charge
                 self.wallet_credit = net_amount
                 self.save()
-                
 
-                wallet, created = Wallet.objects.get_or_create(user=self.user)
+                user_wallet, _ = Wallet.objects.get_or_create(user=self.user)
 
-                opening_balance = wallet.balance
-                wallet.balance += net_amount
-                wallet.save()
-                closing_balance = wallet.balance
-                
+                user_opening_balance = user_wallet.balance
+                user_wallet.add_amount(net_amount)
+                user_closing_balance = user_wallet.balance
+
                 Transaction.objects.create(
-                    wallet=wallet,
+                    wallet=user_wallet,
                     amount=net_amount,
                     net_amount=net_amount,
                     service_charge=charge,
@@ -870,46 +899,18 @@ class FundRequest(models.Model):
                         f"(0.01% charge ₹{charge})"
                     ),
                     created_by=approved_by,
-                    opening_balance=opening_balance,
-                    closing_balance=closing_balance  
+                    opening_balance=user_opening_balance,
+                    closing_balance=user_closing_balance,
+                    status='success'
                 )
 
-
-                # if approved_by.role != "superadmin":
-                #     admin_wallet = approved_by.wallet
-
-                #     if admin_wallet.balance < net_amount:
-                #         raise ValueError("Admin wallet has insufficient balance")
-
-                #     admin_opening_balance = admin_wallet.balance
-                #     admin_wallet.balance -= net_amount
-                #     admin_wallet.save()
-                #     admin_closing_balance = admin_wallet.balance
-
-                #     Transaction.objects.create(
-                #         wallet=admin_wallet,
-                #         amount=net_amount,
-                #         net_amount=net_amount,
-                #         service_charge=Decimal("0.00"),
-                #         transaction_type='debit',
-                #         transaction_category='fund_request',
-                #         description=(
-                #             f"Fund request approved for {self.user.username}: "
-                #             f"{self.reference_number}"
-                #         ),
-                #         created_by=approved_by,
-                #         opening_balance=admin_opening_balance,
-                #         closing_balance=admin_closing_balance
-                #     )
-
-                admin_wallet = approved_by.wallet
+                admin_wallet, _ = Wallet.objects.get_or_create(user=approved_by)
 
                 if admin_wallet.balance < net_amount:
                     raise ValueError("Admin wallet has insufficient balance")
 
                 admin_opening_balance = admin_wallet.balance
-                admin_wallet.balance -= net_amount
-                admin_wallet.save()
+                admin_wallet.system_deduct_amount(net_amount)
                 admin_closing_balance = admin_wallet.balance
 
                 Transaction.objects.create(
@@ -925,15 +926,16 @@ class FundRequest(models.Model):
                     ),
                     created_by=approved_by,
                     opening_balance=admin_opening_balance,
-                    closing_balance=admin_closing_balance
+                    closing_balance=admin_closing_balance,
+                    status='success'
                 )
 
                 return True, "Fund request approved successfully"
-                    
+
         except Exception as e:
             print(f"Error approving fund request: {str(e)}")
             return False, f"Error approving request: {str(e)}"
-
+        
 
     
     def reject(self, rejected_by, notes=""):
@@ -976,6 +978,16 @@ def set_transaction_balances(sender, instance, **kwargs):
     if not instance.pk:
         wallet = instance.wallet
         
+        if isinstance(instance.amount, float):
+            instance.amount = Decimal(str(instance.amount))
+        elif isinstance(instance.amount, int):
+            instance.amount = Decimal(instance.amount)
+        
+        if isinstance(instance.service_charge, float):
+            instance.service_charge = Decimal(str(instance.service_charge))
+        elif isinstance(instance.service_charge, int):
+            instance.service_charge = Decimal(instance.service_charge)
+        
         if instance.transaction_type == 'credit':
             instance.opening_balance = wallet.balance
             instance.closing_balance = wallet.balance + instance.amount
@@ -985,49 +997,15 @@ def set_transaction_balances(sender, instance, **kwargs):
             instance.closing_balance = wallet.balance
 
 
-class RefundRequest(models.Model):
-    STATUS_CHOICES = (
-        ('pending', 'Pending'),
-        ('approved', 'Approved'),
-        ('rejected', 'Rejected'),
-        ('processed', 'Processed'),
-    )
-    
-    REFUND_TYPES = (
-        ('service_payment', 'Service Payment'),
-        ('money_transfer', 'Money Transfer'),
-        ('other', 'Other'),
-    )
-    
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='refund_requests')
-    transaction = models.ForeignKey(Transaction, on_delete=models.CASCADE, related_name='refund_requests')
-    amount = models.DecimalField(max_digits=15, decimal_places=2)
-    refund_type = models.CharField(max_length=20, choices=REFUND_TYPES)
-    reason = models.TextField()
-    screenshot = models.FileField(upload_to='refunds/', blank=True, null=True)
-    
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    
-    processed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, 
-                                     related_name='processed_refunds')
-    processed_at = models.DateTimeField(null=True, blank=True)
-    admin_notes = models.TextField(blank=True, null=True)
-    
-    refund_id = models.CharField(max_length=50, unique=True)
-    
-    class Meta:
-        ordering = ['-created_at']
+@receiver(pre_save, sender=User)
+def generate_role_uid(sender, instance, **kwargs):
+    if instance.role_uid:
+        return
 
+    prefix = User.ROLE_PREFIX.get(instance.role, 'uid')
 
-    def save(self, *args, **kwargs):
-        if not self.refund_id:
-            self.refund_id = self.generate_refund_id()
-        super().save(*args, **kwargs)
-    
-    def generate_refund_id(self):
-        """Generate unique refund ID"""
-        timestamp = timezone.now().strftime('%Y%m%d%H%M%S')
-        random_str = str(random.randint(1000, 9999))
-        return f"REF{timestamp}{random_str}"
+    while True:
+        uid = f"{prefix}-{generate_5_digit()}"
+        if not User.objects.filter(role_uid=uid).exists():
+            instance.role_uid = uid
+            break

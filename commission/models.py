@@ -261,6 +261,7 @@ class OperatorCommission(models.Model):
     commission_plan = models.ForeignKey(CommissionPlan, on_delete=models.CASCADE)
     
     commission_type = models.CharField(max_length=20, choices=COMMISSION_TYPES, default='percentage')
+    max_commission_value = models.DecimalField(max_digits=10,decimal_places=2,validators=[MinValueValidator(0)],help_text="Maximum commission allowed (from CSV, cannot be exceeded)")
     commission_value = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)])
     
     admin_commission = models.DecimalField(
@@ -298,17 +299,23 @@ class OperatorCommission(models.Model):
         circle_text = f" ({self.operator_circle})" if self.operator_circle else ""
         return f"{self.operator_name}{circle_text} - {self.commission_plan.name} - {self.commission_value}{'%' if self.commission_type == 'percentage' else '₹'}"
     
+
     def clean(self):
-        """Validate commission distribution doesn't exceed 100%"""
         if self.commission_type == 'percentage':
             total = (
-                self.admin_commission + 
-                self.master_commission + 
-                self.dealer_commission + 
+                self.admin_commission +
+                self.master_commission +
+                self.dealer_commission +
                 self.retailer_commission
             )
             if total > 100:
                 raise ValidationError("Total commission distribution cannot exceed 100%")
+            
+        if self.commission_value > self.max_commission_value:
+            raise ValidationError(
+                f"Commission value cannot exceed max limit {self.max_commission_value}"
+            )
+
     
     def calculate_commission(self, transaction_amount):
         """Calculate commission based on transaction amount"""
