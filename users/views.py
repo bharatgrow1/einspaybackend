@@ -1850,7 +1850,7 @@ class WalletViewSet(DynamicModelViewSet):
                         recipient_user=target_user,
                         metadata={'notes': notes, 'transfer_type': 'credit_to_user', 'admin_id': admin.id}
                     )
-                    
+
                     Transaction.objects.create(
                         wallet=target_wallet,
                         amount=amount,
@@ -1864,9 +1864,12 @@ class WalletViewSet(DynamicModelViewSet):
                         metadata={'notes': notes, 'transfer_type': 'credit_from_admin', 'admin_id': admin.id}
                     )
 
-                    admin_wallet.deduct_amount(amount, pin=pin)
+                    admin_wallet.system_deduct_amount(amount)
                     target_wallet.add_amount(amount)
-                    
+
+                    admin_wallet.refresh_from_db()
+                    target_wallet.refresh_from_db()
+
                     message = f"₹{amount} transferred to {target_user.username}"
                     
                 else:
