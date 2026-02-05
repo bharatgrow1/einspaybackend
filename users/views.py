@@ -1803,7 +1803,6 @@ class WalletViewSet(DynamicModelViewSet):
     
     @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
     def direct_transfer(self, request):
-        """Direct wallet-to-wallet transfer (admin to user)"""
         serializer = DirectWalletTransferSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
@@ -1839,14 +1838,6 @@ class WalletViewSet(DynamicModelViewSet):
                             status=status.HTTP_400_BAD_REQUEST
                         )
                     
-                    admin_opening = admin_wallet.balance
-                    admin_wallet.deduct_amount(amount, pin=pin)
-                    admin_closing = admin_wallet.balance
-                    
-                    target_opening = target_wallet.balance
-                    target_wallet.add_amount(amount)
-                    target_closing = target_wallet.balance
-                    
                     Transaction.objects.create(
                         wallet=admin_wallet,
                         amount=amount,
@@ -1857,11 +1848,9 @@ class WalletViewSet(DynamicModelViewSet):
                         description=f"Direct transfer to {target_user.username}: {notes}",
                         created_by=request.user,
                         recipient_user=target_user,
-                        opening_balance=admin_opening,
-                        closing_balance=admin_closing,
                         metadata={'notes': notes, 'transfer_type': 'credit_to_user', 'admin_id': admin.id}
                     )
-                    
+
                     Transaction.objects.create(
                         wallet=target_wallet,
                         amount=amount,
@@ -1872,11 +1861,15 @@ class WalletViewSet(DynamicModelViewSet):
                         description=f"Direct transfer from {request.user.username}: {notes}",
                         created_by=request.user,
                         recipient_user=request.user,
-                        opening_balance=target_opening,
-                        closing_balance=target_closing,
                         metadata={'notes': notes, 'transfer_type': 'credit_from_admin', 'admin_id': admin.id}
                     )
-                    
+
+                    admin_wallet.system_deduct_amount(amount)
+                    target_wallet.add_amount(amount)
+
+                    admin_wallet.refresh_from_db()
+                    target_wallet.refresh_from_db()
+
                     message = f"₹{amount} transferred to {target_user.username}"
                     
                 else:
@@ -1886,15 +1879,6 @@ class WalletViewSet(DynamicModelViewSet):
                             status=status.HTTP_400_BAD_REQUEST
                         )
                     
-                    target_opening = target_wallet.balance
-                    target_wallet.balance -= amount
-                    target_wallet.save()
-                    target_closing = target_wallet.balance
-                    
-                    admin_opening = admin_wallet.balance
-                    admin_wallet.balance += amount
-                    admin_wallet.save()
-                    admin_closing = admin_wallet.balance
                     
                     Transaction.objects.create(
                         wallet=target_wallet,
@@ -1906,8 +1890,6 @@ class WalletViewSet(DynamicModelViewSet):
                         description=f"Direct deduction by {request.user.username}: {notes}",
                         created_by=request.user,
                         recipient_user=request.user,
-                        opening_balance=target_opening,
-                        closing_balance=target_closing,
                         metadata={'notes': notes, 'transfer_type': 'debit_by_admin', 'admin_id': admin.id}
                     )
                     
@@ -1921,10 +1903,10 @@ class WalletViewSet(DynamicModelViewSet):
                         description=f"Direct deduction from {target_user.username}: {notes}",
                         created_by=request.user,
                         recipient_user=target_user,
-                        opening_balance=admin_opening,
-                        closing_balance=admin_closing,
                         metadata={'notes': notes, 'transfer_type': 'credit_from_user', 'admin_id': admin.id}
                     )
+                    target_wallet.system_deduct_amount(amount)
+                    admin_wallet.add_amount(amount)
                     
                     message = f"₹{amount} deducted from {target_user.username}"
                 
@@ -1952,7 +1934,6 @@ class WalletViewSet(DynamicModelViewSet):
                 {'error': f'Transfer failed: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        
 
 
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
