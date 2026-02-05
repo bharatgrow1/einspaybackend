@@ -664,6 +664,7 @@ class Transaction(models.Model):
     transaction_type = models.CharField(max_length=10, choices=TRANSACTION_TYPES)
     transaction_category = models.CharField(max_length=30, choices=TRANSACTION_CATEGORIES, default='other')
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='success')
+    refund_status = models.CharField(max_length=20,default="not_refunded")
     description = models.CharField(max_length=255)
     reference_number = models.CharField(max_length=100, unique=True, blank=True)
     recipient_user = models.ForeignKey(
