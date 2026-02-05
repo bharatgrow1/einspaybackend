@@ -664,8 +664,8 @@ class Transaction(models.Model):
     transaction_type = models.CharField(max_length=10, choices=TRANSACTION_TYPES)
     transaction_category = models.CharField(max_length=30, choices=TRANSACTION_CATEGORIES, default='other')
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='success')
-    refund_status = models.CharField(max_length=20,default="not_refunded")
     description = models.CharField(max_length=255)
+    refund_status = models.CharField(max_length=20,default="not_refunded")
     reference_number = models.CharField(max_length=100, unique=True, blank=True)
     recipient_user = models.ForeignKey(
         settings.AUTH_USER_MODEL, 
@@ -884,10 +884,6 @@ class FundRequest(models.Model):
 
                 user_wallet, _ = Wallet.objects.get_or_create(user=self.user)
 
-                user_opening_balance = user_wallet.balance
-                user_wallet.add_amount(net_amount)
-                user_closing_balance = user_wallet.balance
-
                 Transaction.objects.create(
                     wallet=user_wallet,
                     amount=net_amount,
@@ -900,19 +896,14 @@ class FundRequest(models.Model):
                         f"(0.01% charge ₹{charge})"
                     ),
                     created_by=approved_by,
-                    opening_balance=user_opening_balance,
-                    closing_balance=user_closing_balance,
                     status='success'
                 )
+                user_wallet.add_amount(net_amount)
 
                 admin_wallet, _ = Wallet.objects.get_or_create(user=approved_by)
 
                 if admin_wallet.balance < net_amount:
                     raise ValueError("Admin wallet has insufficient balance")
-
-                admin_opening_balance = admin_wallet.balance
-                admin_wallet.system_deduct_amount(net_amount)
-                admin_closing_balance = admin_wallet.balance
 
                 Transaction.objects.create(
                     wallet=admin_wallet,
@@ -926,10 +917,9 @@ class FundRequest(models.Model):
                         f"{self.reference_number}"
                     ),
                     created_by=approved_by,
-                    opening_balance=admin_opening_balance,
-                    closing_balance=admin_closing_balance,
                     status='success'
                 )
+                admin_wallet.system_deduct_amount(net_amount)
 
                 return True, "Fund request approved successfully"
 
