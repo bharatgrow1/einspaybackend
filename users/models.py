@@ -874,15 +874,17 @@ class FundRequest(models.Model):
 
                 net_amount = self.amount - charge
 
-                self.status = 'approved'
-                self.processed_by = approved_by
-                self.processed_at = timezone.now()
-                self.admin_notes = notes
-                self.service_charge = charge
-                self.wallet_credit = net_amount
-                self.save()
-
                 user_wallet, _ = Wallet.objects.get_or_create(user=self.user)
+                admin_wallet, _ = Wallet.objects.get_or_create(user=approved_by)
+
+                if admin_wallet.balance < net_amount:
+                    raise ValueError("Admin wallet has insufficient balance")
+
+                admin_wallet.system_deduct_amount(net_amount)
+                user_wallet.add_amount(net_amount)
+
+                admin_wallet.refresh_from_db()
+                user_wallet.refresh_from_db()
 
                 Transaction.objects.create(
                     wallet=user_wallet,
@@ -898,12 +900,6 @@ class FundRequest(models.Model):
                     created_by=approved_by,
                     status='success'
                 )
-                user_wallet.add_amount(net_amount)
-
-                admin_wallet, _ = Wallet.objects.get_or_create(user=approved_by)
-
-                if admin_wallet.balance < net_amount:
-                    raise ValueError("Admin wallet has insufficient balance")
 
                 Transaction.objects.create(
                     wallet=admin_wallet,
@@ -919,16 +915,23 @@ class FundRequest(models.Model):
                     created_by=approved_by,
                     status='success'
                 )
-                admin_wallet.system_deduct_amount(net_amount)
+
+                self.status = 'approved'
+                self.processed_by = approved_by
+                self.processed_at = timezone.now()
+                self.admin_notes = notes
+                self.service_charge = charge
+                self.wallet_credit = net_amount
+                self.save()
 
                 return True, "Fund request approved successfully"
 
         except Exception as e:
             print(f"Error approving fund request: {str(e)}")
             return False, f"Error approving request: {str(e)}"
-        
 
-    
+
+
     def reject(self, rejected_by, notes=""):
         """Reject the fund request"""
         if self.status != 'pending':
