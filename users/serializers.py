@@ -577,9 +577,76 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class UserBankSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source="user.username", read_only=True)
+    user_role = serializers.CharField(source="user.role", read_only=True)
+    role_uid = serializers.CharField(source="user.role_uid", read_only=True)
+
+    parent_username = serializers.CharField(
+        source="user.parent_user.username", read_only=True
+    )
+    parent_role = serializers.CharField(
+        source="user.parent_user.role", read_only=True
+    )
+
+    created_by = serializers.CharField(
+        source="user.created_by.username", read_only=True
+    )
+
+    first_name = serializers.CharField(source="user.first_name", read_only=True)
+    last_name = serializers.CharField(source="user.last_name", read_only=True)
+    phone_number = serializers.CharField(source="user.phone_number", read_only=True)
+    email = serializers.EmailField(source="user.email", read_only=True)
+
+    business_name = serializers.CharField(source="user.business_name", read_only=True)
+    gst_number = serializers.CharField(source="user.gst_number", read_only=True)
+
+    address = serializers.CharField(source="user.address", read_only=True)
+    city = serializers.CharField(source="user.city", read_only=True)
+    state = serializers.CharField(source="user.state", read_only=True)
+    pincode = serializers.CharField(source="user.pincode", read_only=True)
+
+    wallet_balance = serializers.DecimalField(
+        source="user.wallet.balance",
+        max_digits=15,
+        decimal_places=2,
+        read_only=True
+    )
+
     class Meta:
         model = UserBank
-        fields = "__all__"
+        fields = [
+            "id",
+            "bank_name",
+            "account_number",
+            "ifsc_code",
+            "account_holder_name",
+            "is_primary",
+            "is_verified",
+            "created_at",
+
+            "username",
+            "user_role",
+            "role_uid",
+
+            "parent_username",
+            "parent_role",
+            "created_by",
+
+            "first_name",
+            "last_name",
+            "phone_number",
+            "email",
+
+            "business_name",
+            "gst_number",
+
+            "address",
+            "city",
+            "state",
+            "pincode",
+
+            "wallet_balance",
+        ]
         read_only_fields = ["is_verified"]
 
 
