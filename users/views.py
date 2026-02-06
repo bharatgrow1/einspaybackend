@@ -255,9 +255,22 @@ class UserBankViewSet(viewsets.ModelViewSet):
         user = self.request.user
 
         if user.role == "superadmin":
-            return UserBank.objects.all()
+            return UserBank.objects.filter(user=user)
 
-        return UserBank.objects.filter(user=user)
+        if user.role == "admin":
+            return UserBank.objects.filter(
+                user=user.parent_user 
+            )
+
+        parent = user.parent_user
+        while parent and parent.role != "admin":
+            parent = parent.parent_user
+
+        if parent:
+            return UserBank.objects.filter(user=parent)
+
+        return UserBank.objects.none()
+
 
 
     def perform_create(self, serializer):
