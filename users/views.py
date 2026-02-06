@@ -251,26 +251,29 @@ class UserBankViewSet(viewsets.ModelViewSet):
     serializer_class = UserBankSerializer
     permission_classes = [IsAuthenticated]
 
+    # def get_queryset(self):
+    #     user = self.request.user
+
+    #     if user.role == "superadmin":
+    #         return UserBank.objects.all()
+
+    #     return UserBank.objects.filter(user=user)
+
+
+
     def get_queryset(self):
         user = self.request.user
 
         if user.role == "superadmin":
-            return UserBank.objects.filter(user=user)
+            return UserBank.objects.all()
 
         if user.role == "admin":
-            return UserBank.objects.filter(
-                user=user.parent_user 
-            )
+            if user.parent_user:
+                return UserBank.objects.filter(user=user.parent_user)
 
-        parent = user.parent_user
-        while parent and parent.role != "admin":
-            parent = parent.parent_user
+            return UserBank.objects.filter(user=user)
 
-        if parent:
-            return UserBank.objects.filter(user=parent)
-
-        return UserBank.objects.none()
-
+        return UserBank.objects.filter(user=user)
 
 
     def perform_create(self, serializer):
