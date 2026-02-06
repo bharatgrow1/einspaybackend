@@ -880,31 +880,12 @@ class FundRequest(models.Model):
                 if admin_wallet.balance < net_amount:
                     raise ValueError("Admin wallet has insufficient balance")
 
-                admin_wallet.system_deduct_amount(net_amount)
-                user_wallet.add_amount(net_amount)
-
-                admin_wallet.refresh_from_db()
-                user_wallet.refresh_from_db()
-
-                Transaction.objects.create(
-                    wallet=user_wallet,
-                    amount=net_amount,
-                    net_amount=net_amount,
-                    service_charge=charge,
-                    transaction_type='credit',
-                    transaction_category='fund_request',
-                    description=(
-                        f"Fund request approved: {self.reference_number} "
-                        f"(0.01% charge ₹{charge})"
-                    ),
-                    created_by=approved_by,
-                    status='success'
-                )
+                admin_wallet.balance -= net_amount
+                admin_wallet.save(update_fields=["balance"])
 
                 Transaction.objects.create(
                     wallet=admin_wallet,
                     amount=net_amount,
-                    net_amount=net_amount,
                     service_charge=Decimal("0.00"),
                     transaction_type='debit',
                     transaction_category='fund_request',
@@ -916,19 +897,43 @@ class FundRequest(models.Model):
                     status='success'
                 )
 
+                Transaction.objects.create(
+                    wallet=user_wallet,
+                    amount=net_amount,
+                    service_charge=charge,
+                    transaction_type='credit',
+                    transaction_category='fund_request',
+                    description=(
+                        f"Fund request approved: {self.reference_number} "
+                        f"(0.01% charge ₹{charge})"
+                    ),
+                    created_by=approved_by,
+                    status='success'
+                )
+
+                user_wallet.balance += net_amount
+                user_wallet.save(update_fields=["balance"])
+
                 self.status = 'approved'
                 self.processed_by = approved_by
                 self.processed_at = timezone.now()
                 self.admin_notes = notes
                 self.service_charge = charge
                 self.wallet_credit = net_amount
-                self.save()
+                self.save(update_fields=[
+                    "status",
+                    "processed_by",
+                    "processed_at",
+                    "admin_notes",
+                    "service_charge",
+                    "wallet_credit"
+                ])
 
                 return True, "Fund request approved successfully"
 
         except Exception as e:
-            print(f"Error approving fund request: {str(e)}")
-            return False, f"Error approving request: {str(e)}"
+            return False, str(e)
+
 
 
 
