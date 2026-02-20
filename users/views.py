@@ -28,7 +28,7 @@ from google.auth.transport import requests as google_requests
 
 from users.models import (Wallet, Transaction,  ServiceCharge, FundRequest, UserService, User, 
                           RolePermission, State, City, FundRequest, EmailOTP, ForgotPasswordOTP, 
-                           MobileOTP, ForgetPinOTP, WalletPinOTP, UserBank )
+                           MobileOTP, ForgetPinOTP, WalletPinOTP, UserBank, RefundRequest )
 
 from services.models import ServiceSubCategory
 from users.permissions import (IsSuperAdmin, IsAdminUser)
@@ -2821,3 +2821,130 @@ class UserHierarchyViewSet(viewsets.ViewSet):
             })
 
         return Response({"users": []})
+
+
+
+class RefundViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated]
+
+    def get_all_child_users(self, user):
+        users = [user]
+
+        def recurse(parent):
+            children = User.objects.filter(parent_user=parent)
+            for child in children:
+                users.append(child)
+                recurse(child)
+
+        recurse(user)
+        return users
+
+
+    def list(self, request):
+
+        user = request.user
+
+        refunds = RefundRequest.objects.select_related(
+            "user",
+            "original_transaction",
+            "processed_by"
+        )
+
+        if user.role == "superadmin":
+            queryset = refunds
+
+        elif user.role == "admin":
+            allowed_users = self.get_all_child_users(user)
+            queryset = refunds.filter(user__in=allowed_users)
+
+        elif user.role in ["master", "dealer"]:
+            allowed_users = self.get_all_child_users(user)
+            queryset = refunds.filter(user__in=allowed_users)
+
+        else:
+            queryset = refunds.filter(user=user)
+
+        serializer_data = [{
+            "id": r.id,
+            "user_username": r.user.username,
+            "amount": r.amount,
+            "status": r.status,
+            "admin_note": r.admin_note,
+            "processed_by": r.processed_by.username if r.processed_by else None,
+            "processed_at": r.processed_at,
+            "reason": r.original_transaction.description if r.original_transaction else None,
+            "transaction_details": {
+                "reference_number": r.original_transaction.reference_number if r.original_transaction else None,
+                "transaction_type": r.original_transaction.transaction_type if r.original_transaction else None,
+                "category": r.original_transaction.transaction_category if r.original_transaction else None,
+                "created_at": r.original_transaction.created_at if r.original_transaction else None,
+                "status": r.original_transaction.status if r.original_transaction else None,
+            }
+        } for r in queryset]
+
+        return Response(serializer_data)
+
+
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+
+        if request.user.role not in ["superadmin", "admin"]:
+            return Response({"error": "Permission denied"}, status=403)
+
+        admin_note = request.data.get("admin_note")
+
+        with db_transaction.atomic():
+
+            refund = RefundRequest.objects.select_for_update().get(
+                id=pk,
+                status="initiated"
+            )
+
+            wallet = refund.user.wallet
+
+            credit_txn = Transaction.objects.create(
+                wallet=wallet,
+                amount=refund.amount,
+                transaction_type='credit',
+                transaction_category='refund',
+                description="Refund Approved",
+                created_by=request.user,
+                status='success',
+                refund_status='refunded'
+            )
+
+            wallet.add_amount(refund.amount)
+
+            refund.status = "approved"
+            refund.admin_note = admin_note
+            refund.processed_by = request.user
+            refund.processed_at = timezone.now()
+            refund.refund_transaction = credit_txn
+            refund.save()
+
+            refund.original_transaction.refund_status = "refunded"
+            refund.original_transaction.save()
+
+            return Response({"message": "Refund Approved"})
+
+        
+
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+
+        if request.user.role not in ["superadmin", "admin"]:
+            return Response({"error": "Permission denied"}, status=403)
+
+        admin_note = request.data.get("admin_note")
+
+        refund = RefundRequest.objects.get(id=pk, status="initiated")
+
+        refund.status = "rejected"
+        refund.admin_note = admin_note
+        refund.processed_by = request.user
+        refund.processed_at = timezone.now()
+        refund.save()
+
+        return Response({"message": "Refund Rejected"})
+
