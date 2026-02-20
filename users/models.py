@@ -1008,3 +1008,44 @@ def generate_role_uid(sender, instance, **kwargs):
         if not User.objects.filter(role_uid=uid).exists():
             instance.role_uid = uid
             break
+
+
+
+class RefundRequest(models.Model):
+
+    STATUS = [
+        ('initiated', 'Initiated'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+    ]
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    original_transaction = models.ForeignKey(Transaction, on_delete=models.CASCADE)
+
+    refund_transaction = models.ForeignKey(
+        Transaction,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="refund_credit"
+    )
+
+    amount = models.DecimalField(max_digits=15, decimal_places=2)
+    eko_response = models.JSONField(default=dict)
+
+    status = models.CharField(max_length=20, choices=STATUS, default='initiated')
+
+    # 🔥 ADD THESE 3 FIELDS
+    admin_note = models.TextField(null=True, blank=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+
+    processed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='processed_refunds'
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
