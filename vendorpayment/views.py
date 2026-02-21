@@ -17,6 +17,9 @@ from rest_framework.pagination import PageNumberPagination
 from django.db.models import Q
 from users.models import User
 from datetime import timedelta
+from users.services import RefundService
+from users.utils import EkoAnalyzer
+
 
 
 logger = logging.getLogger(__name__)
@@ -86,7 +89,7 @@ class VendorPaymentViewSet(viewsets.ViewSet):
             
             wallet.deduct_amount(amount, total_fee, pin)
             
-            Transaction.objects.create(
+            wallet_txn = Transaction.objects.create(
                 wallet=wallet,
                 service_charge=total_fee,
                 amount=amount,
@@ -95,7 +98,7 @@ class VendorPaymentViewSet(viewsets.ViewSet):
                 transaction_category='vendor_payment',
                 description=f"Vendor payment to {data['recipient_name']} - Account: {data['account'][-4:]}",
                 created_by=user,
-                status='success',
+                status='processing',  # IMPORTANT change
                 metadata={
                     'vendor_payment_id': vendor_payment.id,
                     'recipient_name': data['recipient_name'],
@@ -103,11 +106,15 @@ class VendorPaymentViewSet(viewsets.ViewSet):
                     'ifsc': data['ifsc'],
                     'transfer_amount': str(amount),
                     'processing_fee': str(fee),
-                    'gst': str(gst), 
+                    'gst': str(gst),
                     'total_fee': str(total_fee),
                     'total_deduction': str(total_deduction)
                 }
             )
+
+            vendor_payment.wallet_transaction = wallet_txn
+            vendor_payment.save(update_fields=["wallet_transaction"])
+
             
             logger.info(f"✅ Wallet deduction successful: ₹{total_deduction} deducted from wallet")
             logger.info(f"✅ New wallet balance: ₹{wallet.balance}")
@@ -152,14 +159,28 @@ class VendorPaymentViewSet(viewsets.ViewSet):
             )
 
             tx_desc = str(tx_desc).upper()
+            analysis_result = EkoAnalyzer.analyze(eko_result.get("data", {}))
 
-            if tx_desc in ["INITIATED", "SUCCESS", "SUCCESSFUL", "2"]:
+            if analysis_result == "success":
+
                 vendor_payment.status = "success"
-            elif tx_desc in ["FAILED", "FAILURE", "1"]:
-                vendor_payment.status = "failed"
-            else:
-                vendor_payment.status = "processing"
+                wallet_txn.status = "success"
+                wallet_txn.save()
 
+                message = "Vendor payment successful"
+
+            else:
+
+                RefundService.auto_initiate(
+                    wallet_txn,
+                    eko_result.get("data", {})
+                )
+
+                vendor_payment.status = "refund_initiated"
+                wallet_txn.status = "failed"
+                wallet_txn.save()
+
+                message = "Vendor payment failed/pending. Refund initiated for admin approval."
 
             vendor_payment.save()
 
@@ -178,30 +199,7 @@ class VendorPaymentViewSet(viewsets.ViewSet):
             except Exception as e:
                 logger.error(f" Failed to save vendor EKO TID: {str(e)}")
 
-            
-            if vendor_payment.status == "failed":
-                vendor_payment.status = 'failed'
-                vendor_payment.status_message = eko_message
-                vendor_payment.save()
-                
-                wallet.add_amount(total_deduction) 
-                Transaction.objects.create(
-                    wallet=wallet,
-                    amount=total_deduction, 
-                    transaction_type='credit',
-                    transaction_category='refund',
-                    description=f"Refund for failed vendor payment to {data['recipient_name']}",
-                    created_by=user,
-                    status='success',
-                    metadata={'vendor_payment_id': vendor_payment.id}
-                )
-                
-                return Response({
-                    'status': 1,
-                    'message': f'Vendor payment failed: {eko_message}. ₹{total_deduction} refunded to wallet.',
-                    'payment_id': vendor_payment.id
-                })
-            
+        
             if not vendor_payment.receipt_number:
                 vendor_payment.receipt_number = f"VP{vendor_payment.id:08d}"
                 vendor_payment.save(update_fields=['receipt_number'])
@@ -234,63 +232,39 @@ class VendorPaymentViewSet(viewsets.ViewSet):
             return Response(response_data)
             
         except Exception as e:
-            logger.error(f"❌ EKO payment failed: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
-            
-            vendor_payment.status = 'failed'
+            logger.error(f"EKO payment failed: {str(e)}", exc_info=True)
+
+            RefundService.auto_initiate(
+                wallet_txn,
+                {"error": str(e)}
+            )
+
+            vendor_payment.status = "refund_initiated"
             vendor_payment.status_message = str(e)
             vendor_payment.save()
-            
-            wallet.add_amount(total_deduction)
-            Transaction.objects.create(
-                wallet=wallet,
-                amount=total_deduction,
-                transaction_type='credit',
-                transaction_category='refund',
-                description=f"Refund for failed vendor payment (EKO error) to {data['recipient_name']}",
-                created_by=user,
-                status='success',
-                metadata={'vendor_payment_id': vendor_payment.id}
-            )
-            
+
+            wallet_txn.status = "failed"
+            wallet_txn.save()
+
             return Response({
                 'status': 1,
-                'message': f'Vendor payment failed: {str(e)}. ₹{total_deduction} refunded.',
+                'message': 'Vendor payment failed. Refund initiated for admin approval.',
                 'payment_id': vendor_payment.id
             })
-        
-
 
     @staticmethod
     def get_all_child_users(user):
-        role = user.role
+        users = [user]
 
-        if role == "superadmin":
-            return User.objects.all()
+        def recurse(parent):
+            children = User.objects.filter(parent_user=parent)
+            for child in children:
+                users.append(child)
+                recurse(child)
 
-        if role == "admin":
-            return User.objects.filter(
-                Q(created_by=user) |
-                Q(created_by__created_by=user) |
-                Q(created_by__created_by__created_by=user) |
-                Q(id=user.id)
-            )
+        recurse(user)
+        return users
 
-        if role == "master":
-            return User.objects.filter(
-                Q(created_by=user) |
-                Q(created_by__created_by=user) |
-                Q(id=user.id)
-            )
-
-        if role == "dealer":
-            return User.objects.filter(
-                Q(created_by=user) |
-                Q(id=user.id)
-            )
-
-        return User.objects.filter(id=user.id)
         
     
     @action(detail=False, methods=["get"])
