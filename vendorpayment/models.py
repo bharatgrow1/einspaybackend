@@ -9,14 +9,14 @@ class VendorPayment(models.Model):
         ('processing', 'Processing'),
         ('success', 'Success'),
         ('failed', 'Failed'),
-        ('refund_pending', 'Refund Pending'),
+        ('refund_initiated', 'Refund Initiated'),
         ('refunded', 'Refunded'),
     )
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='vendor_payments')
     eko_tid = models.CharField(max_length=50, blank=True, null=True)
     client_ref_id = models.CharField(max_length=50, unique=True, blank=True, null=True)
-    
+    wallet_transaction = models.OneToOneField("users.Transaction",on_delete=models.SET_NULL,null=True,blank=True,related_name="vendor_payment")
     recipient_name = models.CharField(max_length=255)
     recipient_account = models.CharField(max_length=50)
     recipient_ifsc = models.CharField(max_length=11)

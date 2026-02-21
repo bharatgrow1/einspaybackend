@@ -10,7 +10,7 @@ from django.contrib.auth import get_user_model
 from django.db import models
 from rest_framework.permissions import IsAdminUser
 from dmt.permissions import IsSuperAdmin
-from users.models import Transaction
+User = get_user_model()
 
 
 from .services.dmt_manager import dmt_manager
@@ -226,7 +226,6 @@ class DMTTransactionViewSet(viewsets.ViewSet):
         Initiate DMT transaction with wallet payment
         POST /api/dmt/transaction/initiate_with_wallet/
         """
-        
         try:
             serializer = DMTWalletTransactionSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
@@ -237,21 +236,6 @@ class DMTTransactionViewSet(viewsets.ViewSet):
                 user=user,
                 transaction_data=serializer.validated_data
             )
-
-            if result.get('status') == 0:
-                try:
-                    wallet_transaction = Transaction.objects.filter(
-                        wallet=user.wallet,
-                        transaction_category='dmt_transfer'
-                    ).order_by('-created_at').first()
-                    
-                    if wallet_transaction and result.get('data', {}).get('tid'):
-                        wallet_transaction.eko_tid = result['data']['tid']
-                        wallet_transaction.eko_client_ref_id = result['data'].get('client_ref_id')
-                        wallet_transaction.save()
-                        logger.info(f" DMT EKO TID saved: {result['data']['tid']}")
-                except Exception as e:
-                    logger.error(f" Failed to save DMT EKO TID: {str(e)}")
             
             return Response(result)
             
@@ -301,33 +285,17 @@ class DMTTransactionViewSet(viewsets.ViewSet):
 
     @staticmethod
     def get_all_child_users(user):
-        """Simple hierarchy logic - same as vendor"""
-        from django.contrib.auth import get_user_model
-        User = get_user_model()
-        role = user.role
+        users = [user]
 
-        if role == "superadmin":
-            return User.objects.all()
-        elif role == "admin":
-            return User.objects.filter(
-                Q(created_by=user) |
-                Q(created_by__created_by=user) |
-                Q(created_by__created_by__created_by=user) |
-                Q(id=user.id)
-            )
-        elif role == "master":
-            return User.objects.filter(
-                Q(created_by=user) |
-                Q(created_by__created_by=user) |
-                Q(id=user.id)
-            )
-        elif role == "dealer":
-            return User.objects.filter(
-                Q(created_by=user) |
-                Q(id=user.id)
-            )
-        else:
-            return User.objects.filter(id=user.id)
+        def recurse(parent):
+            children = User.objects.filter(parent_user=parent)
+            for child in children:
+                users.append(child)
+                recurse(child)
+
+        recurse(user)
+        return users
+
     
     @action(detail=False, methods=['get'])
     def report(self, request):

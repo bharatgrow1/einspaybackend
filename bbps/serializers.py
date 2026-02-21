@@ -24,7 +24,6 @@ class PlanSerializer(serializers.ModelSerializer):
 
 class bbpsTransactionSerializer(serializers.ModelSerializer):
     user_username = serializers.CharField(source='user.username', read_only=True)
-    operator_name = serializers.CharField(source='operator.operator_name', read_only=True)
     
     class Meta:
         model = bbpsTransaction

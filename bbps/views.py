@@ -20,6 +20,10 @@ from .serializers import (
 )
 from .services.eko_service import bbps_manager
 
+from users.utils import EkoAnalyzer
+from users.services import RefundService
+
+
 logger = logging.getLogger(__name__)
 
 User = get_user_model()
@@ -159,7 +163,6 @@ class bbpsViewSet(viewsets.ViewSet):
         pin = request.data.get('pin')
         
         try:
-            service_charge = bbpsServiceCharge.calculate_charge(data['amount'])
             service_charge = Decimal('0.00')
             total_amount = data['amount'] + service_charge
             
@@ -217,6 +220,8 @@ class bbpsViewSet(viewsets.ViewSet):
                     created_by=user,
                     status='success'
                 )
+                bbps_txn.wallet_transaction = wallet_transaction
+                bbps_txn.save(update_fields=["wallet_transaction"])
                 
                 logger.info(f"✅ Wallet deduction successful: ₹{total_deducted} from {user.username}")
                 
@@ -246,66 +251,40 @@ class bbpsViewSet(viewsets.ViewSet):
 
             message = ""
             
-            if result['success']:
+            analysis_result = EkoAnalyzer.analyze(result.get('eko_response', {}))
+
+            if analysis_result == "success":
                 bbps_txn.status = 'success'
                 bbps_txn.payment_status = 'paid'
-                
-                if wallet_transaction and result.get('eko_transaction_ref'):
-                    wallet_transaction.eko_tid = result.get('eko_transaction_ref')
-                    wallet_transaction.save()
-                
-                try:
-                    from commission.views import CommissionManager
-                    
-                    success, comm_message = CommissionManager.process_operator_commission(
-                        bbps_txn=bbps_txn, 
-                        wallet_transaction=wallet_transaction,
-                        operator_id=data['operator_id']
-                    )
-                    
-                    if success:
-                        logger.info(f"✅ Operator commission processed for bbps: {bbps_txn.transaction_id}")
-                        bbps_txn.status_message = f"bbps successful. {comm_message}"
-                    else:
-                        logger.warning(f"⚠️ Operator commission processing failed: {comm_message}")
-                        
-                except ImportError as e:
-                    logger.warning(f"Commission app not available: {str(e)}")
-                except Exception as e:
-                    logger.error(f"❌ Commission processing error: {str(e)}")
-                    import traceback
-                    logger.error(f"Stack trace: {traceback.format_exc()}")
-            
-                
-            else:
-                bbps_txn.status = 'failed'
-                bbps_txn.payment_status = 'failed'
-                bbps_txn.status_message = result.get('message', 'bbps failed')
                 bbps_txn.completed_at = timezone.now()
-                
-                # Refund amount if bbps failed
-                try:
-                    wallet.add_amount(data['amount'])
-                    Transaction.objects.create(
-                        wallet=wallet,
-                        amount=data['amount'],
-                        transaction_type='credit',
-                        transaction_category='refund',
-                        description=f"Refund for failed bbps {bbps_txn.transaction_id}",
-                        created_by=user,
-                        status='success'
-                    )
-                    message = f"bbps failed. Amount refunded: ₹{data['amount']}"
-                except Exception as e:
-                    message = f"bbps failed. Please contact support for refund: {str(e)}"
+
+                wallet_transaction.status = "success"
+                wallet_transaction.save()
+
+                message = "bbps successful"
+
+            else:
+                RefundService.auto_initiate(
+                    wallet_transaction,
+                    result.get('eko_response', {})
+                )
+
+                bbps_txn.status = analysis_result or 'failed'
+                bbps_txn.payment_status = 'failed'
+                bbps_txn.completed_at = timezone.now()
+
+                wallet_transaction.status = "failed"
+                wallet_transaction.save()
+
+                message = "bbps failed/pending. Refund initiated for admin approval."
+
             
             bbps_txn.save()
             
-            # Serialize response
             txn_serializer = bbpsTransactionSerializer(bbps_txn)
             
             return Response({
-                'success': result['success'],
+                'success': analysis_result == "success",
                 'message': message,
                 'transaction': txn_serializer.data,
                 'wallet_balance': wallet.balance,
