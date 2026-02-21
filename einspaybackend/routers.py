@@ -5,7 +5,7 @@ from services.views import (ServiceCategoryViewSet, DirectServiceFormViewSet, Se
     ServiceFormViewSet, ServiceSubmissionViewSet, ServiceImageViewSet)
 from users.views import (PermissionViewSet, AuthViewSet, UserViewSet, WalletViewSet, UserBankViewSet,
         TransactionViewSet, UserHierarchyViewSet, OnBoardServiceViewSet, FundRequestViewSet, ServiceChargeViewSet,
-        StateViewSet, CityViewSet)
+        StateViewSet, CityViewSet, RefundViewSet)
 from commission.views import (CommissionPlanViewSet, ServiceCommissionViewSet, CommissionTransactionViewSet,
         UserCommissionPlanViewSet, CommissionPayoutViewSet, CommissionStatsViewSet, DealerRetailerCommissionViewSet, 
         CommissionDashboardViewSet, OperatorCommissionViewSet)
@@ -38,6 +38,8 @@ router.register(r'transactions', TransactionViewSet, basename='transactions')
 router.register(r'fund-requests', FundRequestViewSet, basename='fund-requests')
 router.register(r'service-charges', ServiceChargeViewSet, basename='service-charges')
 router.register(r'user/banks', UserBankViewSet, basename='user-banks')
+router.register(r'refunds', RefundViewSet, basename='refunds')
+
 
 
 # Locations
