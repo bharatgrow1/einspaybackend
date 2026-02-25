@@ -358,7 +358,7 @@ class VendorPaymentViewSet(viewsets.ViewSet):
                     "message": "Only successful transaction can be refunded"
                 }, status=400)
 
-            refund_amount = wallet_txn.amount
+            refund_amount = wallet_txn.amount + wallet_txn.service_charge
 
             Transaction.objects.create(
                 wallet=wallet,
