@@ -313,6 +313,97 @@ class VendorPaymentViewSet(viewsets.ViewSet):
 
         
 
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
+    @db_transaction.atomic
+    def update_status(self, request, pk=None):
+
+        if request.user.role not in ["admin", "superadmin"]:
+            return Response({
+                "status": 1,
+                "message": "Permission denied"
+            }, status=403)
+
+        vendor_payment = get_object_or_404(
+            VendorPayment.objects.select_related(
+                "user",
+                "wallet_transaction",
+                "user__wallet"
+            ),
+            pk=pk
+        )
+
+        new_status = request.data.get("status")
+
+        if not new_status:
+            return Response({
+                "status": 1,
+                "message": "Status is required"
+            }, status=400)
+
+        wallet_txn = vendor_payment.wallet_transaction
+        wallet = vendor_payment.user.wallet
+
+        if wallet_txn.refund_status == "refunded":
+            return Response({
+                "status": 1,
+                "message": "Already refunded"
+            }, status=400)
+
+        if new_status == "refund":
+
+            if wallet_txn.status != "success":
+                return Response({
+                    "status": 1,
+                    "message": "Only successful transaction can be refunded"
+                }, status=400)
+
+            refund_amount = wallet_txn.amount
+
+            Transaction.objects.create(
+                wallet=wallet,
+                amount=refund_amount,
+                service_charge=Decimal("0.00"),
+                net_amount=refund_amount,
+                transaction_type="credit",
+                transaction_category="vendor_refund",
+                description=f"Manual refund for {vendor_payment.receipt_number}",
+                created_by=request.user,
+                status="success",
+                refund_status="refunded",
+                metadata={
+                    "vendor_payment_id": vendor_payment.id,
+                    "original_txn_id": wallet_txn.id
+                }
+            )
+
+            wallet.add_amount(refund_amount)
+
+            wallet_txn.refund_status = "refunded"
+            wallet_txn.save(update_fields=["refund_status"])
+
+            vendor_payment.status = "refund"
+            vendor_payment.status_message = "Manually refunded by admin"
+            vendor_payment.save(update_fields=["status", "status_message"])
+
+            return Response({
+                "status": 0,
+                "message": "Refund processed successfully",
+                "new_balance": str(wallet.balance)
+            })
+
+        vendor_payment.status = new_status
+        vendor_payment.save(update_fields=["status"])
+
+        wallet_txn.status = new_status
+        wallet_txn.save(update_fields=["status"])
+
+        return Response({
+            "status": 0,
+            "message": "Status updated successfully"
+        })
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def download_vendor_receipt(request, payment_id):
@@ -323,7 +414,6 @@ def download_vendor_receipt(request, payment_id):
     - client_ref_id (VP format)
     """
     try:
-        # Try to find by payment_id (numeric ID)
         try:
             payment_id_int = int(payment_id)
             vendor_payment = get_object_or_404(
@@ -376,7 +466,6 @@ def view_vendor_receipt(request, payment_id):
     View vendor payment receipt in browser
     """
     try:
-        # Try to find by payment_id (numeric ID)
         try:
             payment_id_int = int(payment_id)
             vendor_payment = get_object_or_404(
@@ -392,10 +481,8 @@ def view_vendor_receipt(request, payment_id):
                 user=request.user
             )
         
-        # Generate receipt data
         receipt_data = vendor_payment.generate_receipt_data()
         
-        # Generate PDF for view
         generator = VendorReceiptGenerator(receipt_data)
         pdf_buffer = generator.generate_pdf()
         
