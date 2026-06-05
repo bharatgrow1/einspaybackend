@@ -3,15 +3,16 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 import logging
+from decimal import Decimal
 from django.utils import timezone
 from rest_framework.pagination import PageNumberPagination
 from django.db.models import Q
 from django.contrib.auth import get_user_model
 from django.db import models
 from rest_framework.permissions import IsAdminUser
-from dmt.permissions import IsSuperAdmin
+from dmt.permissions import IsSuperAdmin, IsAdminRole
 User = get_user_model()
-
+from commission.models import UserCommissionPlan
 
 from .services.dmt_manager import dmt_manager
 from .serializers import (
@@ -20,11 +21,11 @@ from .serializers import (
     DMTSendTxnOTPSerializer, DMTInitiateTransactionSerializer, DMTCreateCustomerSerializer,
     DMTVerifyCustomerSerializer, DMTResendOTPSerializer, EkoBankSerializer, 
     DMTTransactionInquirySerializer, DMTRefundSerializer, DMTRefundOTPResendSerializer, 
-    DMTWalletTransactionSerializer, DMTPlanSerializer, EKOChargeConfigSerializer, DMTChargeSchemeSerializer,
+    DMTWalletTransactionSerializer, EKOChargeConfigSerializer, DMTChargeSchemeSerializer,
     DMTChargeSchemeCreateSerializer, ChargePreviewSerializer
 )
 
-from .models import EkoBank, DMTTransaction, DMTPlan, EKOChargeConfig, DMTChargeScheme
+from .models import EkoBank, DMTTransaction, EKOChargeConfig, DMTChargeScheme
 
 logger = logging.getLogger(__name__)
 
@@ -475,31 +476,9 @@ class DMTChargeAdminViewSet(viewsets.ViewSet):
     
     def get_permissions(self):
         if self.action in ['create_plan', 'create_charge_scheme', 'activate_scheme']:
-            return [IsSuperAdmin()]
-        return [IsAdminUser()]
+            return [IsSuperAdmin()]   # only superadmin create kare
+        return [IsAuthenticated()]   # 🔥 sab login users access kare
     
-    @action(detail=False, methods=['get'])
-    def plans(self, request):
-        """Get all DMT plans"""
-        plans = DMTPlan.objects.filter(is_active=True)
-        serializer = DMTPlanSerializer(plans, many=True)
-        return Response({
-            'status': 0,
-            'data': serializer.data
-        })
-    
-    @action(detail=False, methods=['post'])
-    def create_plan(self, request):
-        """Create new plan (superadmin only)"""
-        serializer = DMTPlanSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        plan = serializer.save()
-        
-        return Response({
-            'status': 0,
-            'message': 'Plan created successfully',
-            'data': serializer.data
-        })
     
     @action(detail=False, methods=['get'])
     def eko_charges(self, request):
@@ -551,21 +530,45 @@ class DMTChargeAdminViewSet(viewsets.ViewSet):
     
     @action(detail=False, methods=['get'])
     def charge_schemes(self, request):
-        """Get all charge schemes"""
-        schemes = DMTChargeScheme.objects.select_related('plan').all()
-        serializer = DMTChargeSchemeSerializer(schemes, many=True)
+
+        user = request.user
+
+        schemes = DMTChargeScheme.objects.select_related('plan')
+
+        if user.role == "superadmin":
+            pass
+
+        else:
+            assignment = UserCommissionPlan.objects.filter(
+                user=user,
+                is_active=True
+            ).first()
+
+            if assignment:
+                schemes = schemes.filter(plan=assignment.commission_plan)
+            else:
+                schemes = DMTChargeScheme.objects.none()
+
+        serializer = DMTChargeSchemeSerializer(
+            schemes,
+            many=True,
+            context={"request": request}
+        )
+
         return Response({
-            'status': 0,
-            'data': serializer.data
+            "status": 0,
+            "data": serializer.data
         })
     
     @action(detail=False, methods=['post'])
     def create_charge_scheme(self, request):
         """Create new charge scheme (superadmin only)"""
-        serializer = DMTChargeSchemeCreateSerializer(data=request.data)
+        serializer = DMTChargeSchemeCreateSerializer(
+            data=request.data,
+            context={"request": request}
+        )
         if serializer.is_valid():
             try:
-                # Get EKO commission for the amount range
                 amount_from = serializer.validated_data['amount_from']
                 amount_to = serializer.validated_data['amount_to']
                 
@@ -574,7 +577,6 @@ class DMTChargeAdminViewSet(viewsets.ViewSet):
                     amount_to=amount_to
                 )
                 
-                # Create scheme with eko_commission
                 scheme = DMTChargeScheme.objects.create(
                     name=serializer.validated_data['name'],
                     plan=serializer.validated_data['plan'],
@@ -717,3 +719,119 @@ class DMTChargeAdminViewSet(viewsets.ViewSet):
             'status': 0,
             'data': data
         })
+    
+
+
+    @action(detail=True, methods=['get'])
+    def scheme_detail(self, request, pk=None):
+
+        try:
+            user = request.user
+
+            scheme = DMTChargeScheme.objects.select_related('plan').get(pk=pk)
+
+            if user.role != "superadmin":
+
+                assignment = UserCommissionPlan.objects.filter(
+                    user=user,
+                    is_active=True
+                ).first()
+
+                if not assignment or scheme.plan != assignment.commission_plan:
+                    return Response({
+                        "status":1,
+                        "message":"You cannot view this scheme"
+                    },status=403)
+
+            serializer = DMTChargeSchemeSerializer(
+                scheme,
+                context={"request":request}
+            )
+
+            return Response({
+                "status":0,
+                "data":serializer.data
+            })
+
+        except DMTChargeScheme.DoesNotExist:
+            return Response({
+                "status":1,
+                "message":"Scheme not found"
+            },status=404)
+
+
+    @action(detail=True, methods=['put'])
+    def update_scheme(self, request, pk=None):
+
+        try:
+
+            scheme = DMTChargeScheme.objects.get(pk=pk)
+            user = request.user
+
+            if user.role == "retailer":
+                return Response({
+                    "status":1,
+                    "message":"Retailer cannot edit schemes"
+                },status=403)
+
+            data = request.data.copy()
+
+            role_map = {
+                "superadmin":"superadmin_percentage",
+                "admin":"admin_percentage",
+                "master":"master_percentage",
+                "dealer":"dealer_percentage"
+            }
+
+            editor_field = role_map.get(user.role)
+
+            if editor_field:
+
+                for field in [
+                    "retailer_percentage",
+                    "dealer_percentage",
+                    "master_percentage",
+                    "admin_percentage"
+                ]:
+
+                    if field in data:
+
+                        old = getattr(scheme, field)
+                        new = Decimal(str(data[field]))
+
+                        diff = new - old
+
+                        editor_old = getattr(scheme, editor_field)
+
+                        new_editor = editor_old - diff
+
+                        if new_editor < 0:
+                            new_editor = Decimal("0")
+
+                        setattr(
+                            scheme,
+                            editor_field,
+                            new_editor
+                        )
+
+            serializer = DMTChargeSchemeCreateSerializer(
+                scheme,
+                data=data,
+                partial=True,
+                context={"request": request}
+            )
+
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+
+            return Response({
+                "status":0,
+                "message":"Scheme updated successfully",
+                "data":serializer.data
+            })
+
+        except DMTChargeScheme.DoesNotExist:
+            return Response({
+                "status":1,
+                "message":"Scheme not found"
+            },status=404)

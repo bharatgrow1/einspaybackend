@@ -1,7 +1,9 @@
 from rest_framework import serializers
 from .models import EkoBank
 from decimal import Decimal
-from dmt.models import DMTPlan, EKOChargeConfig, DMTChargeScheme
+from dmt.models import EKOChargeConfig, DMTChargeScheme
+from commission.models import CommissionPlan
+from commission.serializers import CommissionPlanSerializer
 
 
 class DMTOnboardSerializer(serializers.Serializer):
@@ -156,12 +158,6 @@ class DMTWalletTransactionSerializer(serializers.Serializer):
     
 
 
-class DMTPlanSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = DMTPlan
-        fields = ['id', 'name', 'plan_type', 'description', 'is_active', 'created_at']
-
-
 class EKOChargeConfigSerializer(serializers.ModelSerializer):
     amount_range_display = serializers.SerializerMethodField()
     
@@ -188,29 +184,81 @@ class DMTChargeSchemeCreateSerializer(serializers.ModelSerializer):
         ]
     
     def validate(self, data):
-        amount_from = data['amount_from']
-        amount_to = data['amount_to']
-        
-        try:
-            eko_charge = EKOChargeConfig.objects.get(
-                amount_from=amount_from,
-                amount_to=amount_to
-            )
-            data['eko_commission'] = eko_charge.commission_after_tds
-        except EKOChargeConfig.DoesNotExist:
-            raise serializers.ValidationError("Amount range not found in EKO charges")
-        
-        total_percentage = (
-            data['retailer_percentage'] + 
-            data['dealer_percentage'] + 
-            data['master_percentage'] + 
-            data['admin_percentage'] + 
-            data['superadmin_percentage']
+
+        instance = self.instance
+
+        admin = data.get(
+            "admin_percentage",
+            instance.admin_percentage if instance else 0
         )
-        
-        if total_percentage != 100:
-            raise serializers.ValidationError("Percentages must add up to 100%")
-        
+
+        master = data.get(
+            "master_percentage",
+            instance.master_percentage if instance else 0
+        )
+
+        dealer = data.get(
+            "dealer_percentage",
+            instance.dealer_percentage if instance else 0
+        )
+
+        retailer = data.get(
+            "retailer_percentage",
+            instance.retailer_percentage if instance else 0
+        )
+
+        superadmin = data.get(
+            "superadmin_percentage",
+            instance.superadmin_percentage if instance else 0
+        )
+
+        request = self.context.get("request")
+
+        if not request:
+            return data
+
+        role = request.user.role
+
+        # =========================
+        # SUPERADMIN RULE
+        # =========================
+        if role == "superadmin":
+
+            if admin > superadmin:
+                raise serializers.ValidationError(
+                    "Admin cannot exceed Superadmin"
+                )
+
+        # =========================
+        # ADMIN RULE
+        # =========================
+        if role == "admin":
+
+            if master > admin:
+                raise serializers.ValidationError(
+                    "Master cannot exceed Admin"
+                )
+
+        # =========================
+        # MASTER RULE
+        # =========================
+        if role == "master":
+
+            if dealer > master:
+                raise serializers.ValidationError(
+                    "Dealer cannot exceed Master"
+                )
+
+        # =========================
+        # DEALER RULE
+        # =========================
+        if role == "dealer":
+
+            if retailer > dealer:
+                raise serializers.ValidationError(
+                    "Retailer cannot exceed Dealer"
+                )
+
         return data
     
     def create(self, validated_data):
@@ -219,9 +267,9 @@ class DMTChargeSchemeCreateSerializer(serializers.ModelSerializer):
 
 
 class DMTChargeSchemeSerializer(serializers.ModelSerializer):
-    plan = DMTPlanSerializer(read_only=True)
+    plan = CommissionPlanSerializer(read_only=True)
     plan_id = serializers.PrimaryKeyRelatedField(
-        queryset=DMTPlan.objects.filter(is_active=True),
+        queryset=CommissionPlan.objects.filter(is_active=True),
         write_only=True,
         source='plan'
     )
@@ -245,6 +293,37 @@ class DMTChargeSchemeSerializer(serializers.ModelSerializer):
     def get_total_percentage(self, obj):
         return obj.retailer_percentage + obj.dealer_percentage + obj.master_percentage + obj.admin_percentage + obj.superadmin_percentage
 
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+
+        request = self.context.get("request")
+
+        if not request:
+            return data
+
+        role = request.user.role
+
+        if role == "admin":
+            data.pop("superadmin_percentage", None)
+
+        if role == "master":
+            data.pop("superadmin_percentage", None)
+            data.pop("admin_percentage", None)
+
+        if role == "dealer":
+            data.pop("superadmin_percentage", None)
+            data.pop("admin_percentage", None)
+            data.pop("master_percentage", None)
+
+        if role == "retailer":
+            data.pop("superadmin_percentage", None)
+            data.pop("admin_percentage", None)
+            data.pop("master_percentage", None)
+            data.pop("dealer_percentage", None)
+
+        return data
+    
 
 class ChargePreviewSerializer(serializers.Serializer):
     amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=True)

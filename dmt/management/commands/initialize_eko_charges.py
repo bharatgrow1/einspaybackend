@@ -8,6 +8,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         # Your complete Excel data here
         data = [
+            {'amount_from': 10,'amount_to': 100,'customer_fee_net_gst': 8.47,'eko_pricing': 7,'commission_after_tds': 1.45},
             {'amount_from': 100, 'amount_to': 1000, 'customer_fee_net_gst': 8.47, 'eko_pricing': 7, 'commission_after_tds': 1.45},
             {'amount_from': 200, 'amount_to': 1000, 'customer_fee_net_gst': 8.47, 'eko_pricing': 7, 'commission_after_tds': 1.45},
             {'amount_from': 300, 'amount_to': 1000, 'customer_fee_net_gst': 8.47, 'eko_pricing': 7, 'commission_after_tds': 1.45},

@@ -206,7 +206,7 @@ class DMTManager:
                 else:
                     transfer_amount = Decimal(str(amount_value))
                 
-                charge_scheme = self.get_applicable_charge_scheme(transfer_amount)
+                charge_scheme = self.get_applicable_charge_scheme(user, transfer_amount)
                 if not charge_scheme:
                     return {
                         "status": 1,
@@ -241,15 +241,35 @@ class DMTManager:
                 wallet.balance = wallet_balance - total_deduction
                 wallet.save(update_fields=["balance"])
                 
+                # Fetch recipient details from EKO
+                recipient_name = None
+                account = None
+                ifsc = None
+
+                eko_recipients = self.eko_service.get_recipient_list(
+                    transaction_data.get("customer_id")
+                )
+
+                if eko_recipients.get("status") == 0:
+                    for r in eko_recipients["data"]["recipient_list"]:
+                        if r["recipient_id"] == transaction_data.get("recipient_id"):
+                            recipient_name = r.get("recipient_name")
+                            account = r.get("account")
+                            ifsc = r.get("ifsc")
+                            break
+
+                if not recipient_name:
+                    raise Exception("Recipient details not found")
+
                 recipient, created = DMTRecipient.objects.get_or_create(
                     user=user,
-                    account_number=transaction_data.get('account'),
-                    ifsc_code=transaction_data.get('ifsc'),
+                    account_number=account,
+                    ifsc_code=ifsc,
                     defaults={
-                        'name': transaction_data.get('recipient_name'),
-                        'mobile': transaction_data.get('customer_id'),
-                        'eko_recipient_id': transaction_data.get('recipient_id'),
-                        'is_active': True,
+                        "name": recipient_name,
+                        "mobile": transaction_data.get("customer_id"),
+                        "eko_recipient_id": transaction_data.get("recipient_id"),
+                        "is_active": True,
                     }
                 )
                 
@@ -257,9 +277,9 @@ class DMTManager:
                     user=user,
                     recipient=recipient,
                     amount=transfer_amount,
-                    recipient_name=transaction_data.get('recipient_name'),
-                    recipient_account=transaction_data.get('account'),
-                    recipient_ifsc=transaction_data.get('ifsc'),
+                    recipient_name=recipient_name,
+                    recipient_account=account,
+                    recipient_ifsc=ifsc,
                     sender_mobile=transaction_data.get('customer_id'),
                     eko_recipient_id=transaction_data.get('recipient_id'),
                     status='initiated'
@@ -312,7 +332,7 @@ class DMTManager:
                     dmt_transaction.status = 'success'
                     dmt_transaction.eko_tid = eko_result.get('data', {}).get('tid')
                     dmt_transaction.client_ref_id = eko_result.get('data', {}).get('client_ref_id')
-                    dmt_transaction.bank_ref_num = eko_result.get('data', {}).get('bank_ref_num')
+                    dmt_transaction.eko_bank_ref_num = eko_result.get('data', {}).get('bank_ref_num')
                     dmt_transaction.save()
                     
                     charge_record.distribute_to_wallets()
@@ -341,6 +361,7 @@ class DMTManager:
                 else:
                     wallet.balance = Decimal(str(wallet.balance)) + Decimal(str(total_deduction))
                     wallet.save(update_fields=["balance"])
+                    charge_record.delete()
                     
                     Transaction.objects.create(
                         wallet=wallet,
@@ -372,17 +393,31 @@ class DMTManager:
                 "message": f"Payment processing failed: {str(e)}"
             }
     
-    def get_applicable_charge_scheme(self, amount):
-        """Get active charge scheme for amount"""
-        try:            
+    def get_applicable_charge_scheme(self, user, amount):
+        try:
+
+            user_plan_obj = user.commission_plan
+            if not user_plan_obj:
+                logger.error(f"No commission plan assigned to user {user.id}")
+                return None
+
+            plan = user_plan_obj.commission_plan
+
             scheme = DMTChargeScheme.objects.filter(
+                plan=plan,
                 amount_from__lte=amount,
                 amount_to__gte=amount,
                 is_active=True
-            ).first()
-            
+            ).order_by("amount_from").first()
+
+            if not scheme:
+                logger.error(
+                    f"No charge scheme found for plan {plan.name} and amount {amount}"
+                )
+                return None
+
             return scheme
-            
+
         except Exception as e:
             logger.error(f"Error getting charge scheme: {str(e)}")
             return None
