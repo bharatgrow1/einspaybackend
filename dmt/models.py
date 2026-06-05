@@ -6,6 +6,7 @@ from decimal import Decimal
 import logging
 logger = logging.getLogger(__name__)
 import uuid
+from commission.models import CommissionPlan
 
 
 class DMTTransaction(models.Model):
@@ -473,25 +474,6 @@ class TransactionStatusManager:
         except Exception as e:
             logger.error(f"Error getting refund eligible transactions: {str(e)}")
             return DMTTransaction.objects.none()
-        
-
-class DMTPlan(models.Model):
-    """Platinum, Gold, Silver plans"""
-    PLAN_TYPES = (
-        ('platinum', 'Platinum'),
-        ('gold', 'Gold'),
-        ('silver', 'Silver'),
-        ('basic', 'Basic'),
-    )
-    
-    name = models.CharField(max_length=100)
-    plan_type = models.CharField(max_length=20, choices=PLAN_TYPES, unique=True)
-    description = models.TextField(blank=True)
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    
-    def __str__(self):
-        return f"{self.name} ({self.plan_type})"
 
 
 class EKOChargeConfig(models.Model):
@@ -518,8 +500,7 @@ class DMTChargeScheme(models.Model):
     )
     
     name = models.CharField(max_length=100)
-    plan = models.ForeignKey(DMTPlan, on_delete=models.CASCADE, related_name='charge_schemes')
-    
+    plan = models.ForeignKey(CommissionPlan,on_delete=models.CASCADE,related_name="dmt_charge_schemes") 
     amount_range = models.CharField(max_length=50)
     amount_from = models.DecimalField(max_digits=10, decimal_places=2)
     amount_to = models.DecimalField(max_digits=10, decimal_places=2)
@@ -549,6 +530,18 @@ class DMTChargeScheme(models.Model):
     def save(self, *args, **kwargs):
         if not self.amount_range:
             self.amount_range = f"{self.amount_from}-{self.amount_to}"
+
+        total = (
+            self.retailer_percentage +
+            self.dealer_percentage +
+            self.master_percentage +
+            self.admin_percentage +
+            self.superadmin_percentage
+        )
+
+        if total != 100:
+            raise ValueError("Total commission must be 100%")
+
         super().save(*args, **kwargs)
     
     def calculate_charges(self, transaction_amount):
@@ -624,7 +617,7 @@ class DMTTransactionCharge(models.Model):
                 chain = self.get_hierarchy_chain()
                 
                 for user_info in chain:
-                    role = user_info['role']
+                    role = user_info['role'].lower()
                     amount_field = f"{role}_amount"
                     amount = getattr(self, amount_field, Decimal('0.00'))
                     

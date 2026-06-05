@@ -7,3 +7,9 @@ class IsSuperAdmin(BasePermission):
             user.is_authenticated and
             getattr(user, "role", None) == "superadmin"
         )
+
+
+
+class IsAdminRole(BasePermission):
+    def has_permission(self, request, view):
+        return request.user.role in ["admin", "superadmin"]

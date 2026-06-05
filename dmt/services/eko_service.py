@@ -270,28 +270,29 @@ class EkoAPIService:
         return self.make_request("POST", endpoint, payload)
 
     def initiate_transaction(self, customer_id, recipient_id, amount, otp, otp_ref_id):
-        """Initiate Transaction - CORRECT EKO DMT ENDPOINT"""
-        endpoint = "/v2/transactions"
-        
+        """Initiate Transaction"""
+        endpoint = "/v3/customer/payment/dmt-fino"
+
         from datetime import datetime
         client_ref_id = f"TXN{int(time.time())}"
-        
+
         payload = {
             "initiator_id": self.initiator_id,
             "user_code": self.EKO_USER_CODE,
             "customer_id": customer_id,
             "recipient_id": recipient_id,
+            "recipient_id_type": "1",
             "amount": str(amount),
             "currency": "INR",
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "client_ref_id": client_ref_id,
             "channel": 2,
-            "state": 1,
+            "state": "1",
             "latlong": "28.6139,77.2090",
             "otp": otp,
             "otp_ref_id": otp_ref_id
         }
-        
+
         return self.make_request("POST", endpoint, payload)
     
 
