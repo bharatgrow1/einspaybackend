@@ -8,12 +8,11 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         # Your complete Excel data here
         data = [
-            {'amount_from': 10,'amount_to': 100,'customer_fee_net_gst': 8.47,'eko_pricing': 7,'commission_after_tds': 1.45},
             {'amount_from': 100, 'amount_to': 1000, 'customer_fee_net_gst': 8.47, 'eko_pricing': 7, 'commission_after_tds': 1.45},
-            {'amount_from': 200, 'amount_to': 1000, 'customer_fee_net_gst': 8.47, 'eko_pricing': 7, 'commission_after_tds': 1.45},
-            {'amount_from': 300, 'amount_to': 1000, 'customer_fee_net_gst': 8.47, 'eko_pricing': 7, 'commission_after_tds': 1.45},
+            {'amount_from': 1000, 'amount_to': 5000, 'customer_fee_net_gst': 8.47, 'eko_pricing': 7, 'commission_after_tds': 1.45},
+            {'amount_from': 5000, 'amount_to': 10000, 'customer_fee_net_gst': 8.47, 'eko_pricing': 7, 'commission_after_tds': 1.45},
             # Add ALL your Excel rows here
-            {'amount_from': 10000, 'amount_to': 10000, 'customer_fee_net_gst': 84.75, 'eko_pricing': 7, 'commission_after_tds': 76.19},
+            {'amount_from': 10000, 'amount_to': 25000, 'customer_fee_net_gst': 84.75, 'eko_pricing': 7, 'commission_after_tds': 76.19},
             # Continue with all other rows...
         ]
         
